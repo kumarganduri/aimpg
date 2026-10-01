@@ -112,30 +112,82 @@ Root problem chosen: **invisibility**. Of the five kinds of AI waste mapped in t
    - **v1 has no content-level breakdown** (tool output vs context re-reads). That requires tokenizing content blocks per turn and is deferred to v2.
 8. Local only. No network calls.
 
-### Phase 2: `aimpg replay` (personal SWE-bench). Human ~4-6 weeks / CC ~1-2 weeks
-1. Select N kept commits with a test signal (default 5-10, sampled to cap token spend).
-2. For each one: make a fresh shallow clone at the parent commit (see step 4) and derive the task prompt from the commit message, linked issue or PR description. Run setup X headless in a sandbox, run the repo's tests (or the tests touched by the commit) and record weighted tokens, Wh range, wall time and pass/fail.
-3. **Plug-in contract:** each setup (`claude-code`, `claude-code+rtk`, `claude-code+caveman`, `codex`, ...) declares:
-   - `run(cmd, prompt, workdir)`: its headless invocation;
-   - `tokens(log_path) -> list[Request]`: its log parser, returning the shared core model (D5) so the Phase 1 energy code is reused unchanged;
-   - `image`: the container image the setup runs in (D7);
-   - `usage_map`: how the vendor's usage fields map onto `fresh_in / cache_write / cache_read / output` (`cache_write` is nullable, e.g. for OpenAI) (D14);
-   - `token_source`: `exact`, `estimated` or `none`.
-   Setups with `token_source: none` (possibly Cursor) are excluded from rankings until they expose usage. v1 ships only `claude-code` and `claude-code+rtk`.
-4. **No answer leakage + safety (D7, 5A, contract; details in the Phase 2 eng review):**
-   - The replay workdir is a fresh shallow clone at the parent commit, with no future refs, tags or reflog.
-   - **Updated after spike (2026-10-01):** no Docker. Runs use Legwork's Seatbelt (macOS) / bwrap (Linux) sandbox plus a local allowlisting proxy; see `spikes/egress/RESULTS.md`. Original contract text follows.
-   - Each run happens in a Docker container. Only that clone is mounted (read-write). Nothing from `$HOME` is mounted, so the agent can't read the real repo.
-   - Network egress is limited to the model API, so the agent can't search GitHub for the merged commit.
-   - The API key comes in through an env var. The user's agent config directory is never mounted.
-5. Report paired results with an explicit "lossless?" verdict: pass rate is the same or better at lower weighted tokens.
-6. **Guard rails:**
-   - a hard API spend cap, plus a dry-run cost estimate before anything runs;
-   - API-key billing only, since subscription usage can't be attributed per run;
-   - an `--allow-net` style sandbox permission.
+### Phase 2: `aimpg replay` (personal SWE-bench). Eng-reviewed 2026-10-01 (decisions R1–R21)
+
+**v1 scope (R1, widened by R20–R21):** macOS sandbox only. **Python (pytest) and JS/TS (vitest/jest) repos.** **Three setups.** The rigor parts all stay: allowlist proxy, hermetic agent runs, hidden tests, and the statistics gate. Linux (bwrap + socket relay) comes later (TODOS.md).
+
+```
+select (free)              Phase A: prepare     Phase B: agent             Phase C: judge
+────────────────           ────────────────     ───────────────────        ─────────────────
+your commits that          fresh shallow clone  setup runs in sandbox      copy the commit's
+change code + tests        at parent commit     proxy: api.anthropic.com   test files in,
+ ├ message ≥ 6 words       uv sync in sandbox   only; --bare; throwaway    run them, no network
+ ├ tests FAIL on parent    proxy: PyPI only     config dir; budget cap     → pass / fail
+ └ tests PASS on commit    (once per commit,    tests are NOT present
+   (run twice: not flaky)   shared read-only)
+```
+
+1. **Selection (R4, free).** v1 pool before the fail→pass filter:
+   - Python: Legwork (47 code+test commits) and Mynah (16).
+   - JS/TS: humearth (7) and chrome-dino (6).
+   - Ghost isn't a root-level package.
+   - **JS/TS (R21):** detect vitest or jest from `package.json`. Phase A runs `npm ci` through a proxy that allows only `registry.npmjs.org`. Phase C runs only the commit's test files. The per-run APFS clone covers `node_modules`, which has no editable-path problem.
+   - Your own commits that change both code and tests.
+   - Commit message of at least 6 words.
+   - Committed after the model's training cutoff, so the model can't have memorized it. This resolves the memorization TODO.
+   - **Fail→pass pre-check:** the commit's test files applied to the parent code must fail, and on the commit itself must pass, twice each. Flaky tests are dropped.
+2. **Task (R3):** commit subject plus body, presented as an issue. The commit's tests are hidden from the agent. Both setups get identical text.
+3. **Setups (R2 + R20):** all on the same model, so every comparison is fair:
+   - `claude-code` (baseline);
+   - `claude-code+terse`: adds a short "answer tersely, no recaps" `--append-system-prompt`, which is Caveman's core idea;
+   - `claude-code+rtk`: RTK's command-output compression hook, configured inside the run's config folder. RTK is a third-party binary, so building this setup starts with an explicit install approval (name, source, size).
+
+   Each challenger is compared with the baseline separately. Each CI is 97.5%, so the pair of claims together stays at 95%.
+4. **Plug-in contract:** each setup declares
+   - `name`
+   - `argv(task, workdir) -> list[str]`
+   - `env`
+   - `token_source`
+   - `usage_map`
+   - `tokens(config_dir) -> list[Request]`
+
+   For Claude Code, `tokens` is the **Phase 1 parser run on the run's throwaway config folder** (R9). Claude Code's reported `total_cost_usd` is used only for budget enforcement, and as a cross-check that alerts if tokens disagree by more than 2%.
+5. **Sandbox (R5, R6; spike-proven):**
+   - Seatbelt profile copied from Legwork's hardened rules, with a header citing the source commit. Reads under `$HOME` are limited to the workdir, and local sockets (SSH agent etc.) are denied.
+   - Network allows only the per-phase proxy port.
+   - The allowlisting CONNECT proxy permits PyPI hosts in Phase A, `api.anthropic.com` in Phase B, and nothing in Phase C.
+   - **Spike-verified 2026-10-02 (`spikes/agent/RESULTS.md`, free, fake key):** Claude Code starts in the hardened profile with read-only access to its install folder, honors `HTTPS_PROXY`, and writes its transcript to `CLAUDE_CONFIG_DIR` under `--bare`. Its telemetry attempt was blocked; set `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. A rejected key makes it retry, so the harness fails fast on 401 (R14).
+   - **Run isolation (R18):** every run lives under one replay root. Each agent profile denies that whole root except its own workdir and config dir, `TMPDIR` points inside the workdir (no shared system temp), and hidden tests are staged only after the agent exits.
+   - The agent runs with `--bare`. That skips your hooks, plugins, `CLAUDE.md` auto-discovery, keychain and **auto-memory**; your memory contains hints about your own work, so this is a leak to close.
+   - `CLAUDE_CONFIG_DIR` points to a throwaway folder, and the API key comes from your shell's env var only. It is never written to disk or logs.
+6. **Outcomes (R10):** every run is recorded as one of `passed`, `tests_failed`, `timeout` (30 min), `budget_hit`, `agent_error`, `sandbox_denied` or `harness_error`.
+   - All but `harness_error` count as not passed, and their tokens still count.
+   - A `harness_error` (our bug) is retried once. If it fails again, that commit is excluded for **both** setups.
+   - Results are appended to a JSONL file after every run, so a crash loses nothing.
+7. **Statistics (R7, revised R15–R16):**
+   - **Energy is compared only on shared passes:** commits where both setups passed at least once, paired per commit.
+   - The challenger wins only if the bootstrap 95% CI of the paired W difference excludes 0 at every energy-factor corner (D12).
+   - Pass rates are reported separately, each with its own CI.
+   - `timeout` and `budget_hit` count at the cap (worst case), never as cheap.
+   - Fewer than 6 shared-pass commits gives "not enough passing commits".
+   - Otherwise the result is a winner or **"not proven"**. Pure Python, no dependency.
+   - **Calibration (R16):** 2 commits × 2 setups × 2 repeats = 8 runs. aimpg then shows cost per run, the measured noise, the commits needed to detect a 10% energy difference, and the total cost. You approve that size, or stop.
+8. **Budget (R8):** Sonnet-class model.
+   - Calibration first (R16, 8 runs), each with `--max-budget-usd`. Calibration also confirms the last unverified point: usage rows in a real transcript.
+   - aimpg then proposes a run size and total cost, and asks for a total cap. It stops as soon as the sum of reported costs reaches the cap.
+   - **Integrity (R14):** transcript tokens are cross-checked against `total_cost_usd` from the harness-captured stdout. The agent can't reach that stdout, though it could touch its own transcript. An empty transcript, or a mismatch over 2%, is a `harness_error`, never zero tokens.
+   - API-key billing only. The user creates the key in the Anthropic Console.
+9. **Speed (R11, corrected by R14):** up to 3 runs in parallel, on different commits.
+   - Phase A runs once per commit. **Each run gets an APFS clone (`cp -c`) of the prepared workdir plus `uv sync --offline`** (0.5s, no network). The spike showed a shared env imports the original folder, so the agent's edits would be invisible.
+   - **Dependencies (R17):** Phase A installs packages from the *commit's* lockfile (package list only, no code), so commits that add a dependency stay replayable. The report counts them.
+   - Wall time is recorded as informational, not as a ranking metric.
+10. **Tests (R12):**
+    - A fake-agent plug-in (modes: `solve`, `nothing`, `crash`, `timeout`, `escape`) drives free end-to-end tests on a fixture repo.
+    - Sandbox escape tests run only in macOS CI.
+    - The single paid run is the calibration you confirm.
 
 ### Phase 3: Open leaderboard + badge. Human ~4 weeks / CC ~1 week
-**Gate:** do not start Phase 3 until Phase 2 produces a stable ranking (same order across 3 repeats) on at least 2 repos.
+**Gate:** do not start Phase 3 until Phase 2's statistics gate (R7) declares a result, winner or "not proven", on at least 2 repos.
 1. Opt-in upload of replay summaries only: setup id, model class, repo language and size bucket, task size bucket, weighted tokens, Wh range, pass/fail. No code, prompts, paths or repo names. The repo id is `HMAC(random per-install salt, remote URL)`, used only for dedup. A plain hash of a public repo name could be reversed with a dictionary attack (D15).
 2. Static leaderboard site that shows rankings only where paired replays support them, with confidence intervals.
 3. Badge endpoint plus README snippet. The **badge number comes from replays** (median weighted tokens and Wh per passing replayed task for the repo's chosen setup), not from passive logs, so it is consistent with premise 2.
@@ -197,7 +249,7 @@ pytest. Every planned path ships with its tests.
 ## Success Criteria
 
 - Phase 1: the receipt runs on 3 of the author's own repos in under 10 seconds and surfaces at least one non-obvious finding worth a launch post.
-- Phase 2: a paired replay of 5+ commits on one repo gives a stable ranking (same order across 3 repeats) between at least 2 setups. Budget: 5 commits × 2 setups × 3 repeats = 30 runs, roughly $60-150 on API billing with Sonnet-class models. Use a Haiku-class model first to validate the harness for under $15.
+- Phase 2: on one repo, 10 commits × 2 setups × 2 repeats give a verdict under R7 (winner or "not proven") within the total cap you confirm after calibration, with zero sandbox escapes in the fake-agent `escape` tests.
 - Phase 3: 25+ external repos contribute replay summaries within 2 months of launch, and at least one tool maker responds publicly to its ranking.
 
 ## Distribution Plan
@@ -274,3 +326,62 @@ Critical gaps (no test, no handling, and silent): **0**.
 - [x] **T6**: tier 2 built (Bash paths, author rule, grace, lines split). After the per-session fix, exact matches cover 83% of in-repo energy (above the 70% gate) and tier 2 adds 0 on the author's data, so it stays as a conservative fallback.
 - [ ] **T7 (P2, human: ~0.5 day / CC: ~20min)**: PyPI packaging + GitHub Actions trusted publishing on tag
 
+
+## Phase 2 Eng Review Outputs (2026-10-02)
+
+### What already exists (reused, not rebuilt)
+- **Phase 1 parser + energy model:** replay token counts come from the same code as `aimpg report` (R9).
+- **Legwork's Seatbelt rules:** copied with attribution into `aimpg/replay/sandbox.py` (R6).
+- **Claude Code built-ins:** `--bare` (hermetic: no hooks/plugins/CLAUDE.md/auto-memory), `--max-budget-usd` (per-run cap), `--append-system-prompt` (terse setup), `CLAUDE_CONFIG_DIR` (throwaway config), and `HTTPS_PROXY` (verified).
+- **macOS `cp -c` (APFS clone) + `uv sync --offline`:** per-run copies in about 1s.
+- **SWE-bench's fail→pass validation idea:** used for selection (R4).
+
+### NOT in scope (v1)
+- Linux sandbox: TODOS.md.
+- Leaderboard upload and badge: Phase 3, gated on R7 verdicts on 2 repos.
+- Languages other than Python and JS/TS.
+- Cross-vendor setups such as Codex: same-model comparisons only (D14).
+
+### Failure modes
+| Codepath | Failure | Test | Handling | Visible? |
+|---|---|---|---|---|
+| sandbox | agent reads the real repo or a sibling run | fake-agent `escape` | deny-all replay root (R18) | test fails loudly |
+| proxy | agent reaches GitHub | escape test + proxy log | only api.anthropic.com in Phase B | BLOCK logged |
+| transcript | empty, or edited by the agent | cross-check test | `harness_error` (R14) | yes |
+| env | edits invisible because of a shared venv | e2e fake `solve` must pass | per-run clone + offline sync | e2e fails |
+| deps | commit adds a package | fixture commit adding a dep | commit's lockfile in Phase A (R17) | counted in report |
+| key | rejected or expired key, retry storm | 401 fixture | fail fast | clear error |
+| budget | runaway cost | budget test with fake costs | per-run `--max-budget-usd` + total stop | yes |
+| stats | setup "wins" by failing | stats unit tests | shared-pass comparison (R15) | verdict text |
+
+Critical gaps (no test, no handling, and silent): **0**.
+
+### Parallelization
+- Lane A: `replay/sandbox.py` + `replay/proxy.py`. Independent.
+- Lane B: `replay/select.py` (pytest + JS/TS pre-check). Independent.
+- Lane C: `replay/stats.py`. Pure functions, independent.
+- Then: `replay/run.py` + setups + CLI (depends on A and B), the fake-agent e2e, and finally the paid calibration.
+
+### Implementation Tasks (Phase 2)
+- [ ] **P2-T1 (P1, CC ~1h)** `replay/sandbox.py` + `replay/proxy.py`: hardened profile, per-phase allowlists, deny-all root, `TMPDIR` in the workdir. Escape tests on macOS.
+- [ ] **P2-T2 (P1, CC ~1h)** `replay/select.py`: code+test commits, message ≥6 words, post-cutoff, fail→pass ×2 (pytest, vitest/jest).
+- [ ] **P2-T3 (P1, CC ~1h)** `replay/run.py`: phases A/B/C, per-run clone + offline sync, commit-lockfile deps, 7 outcomes, JSONL results, fast 401 fail, telemetry off.
+- [ ] **P2-T4 (P1, CC ~45m)** setups: baseline, terse, rtk (RTK install needs Kumar's approval). Tokens come from the Phase 1 parser, cross-checked with `total_cost_usd`.
+- [ ] **P2-T5 (P1, CC ~45m)** `replay/stats.py`: shared-pass paired bootstrap at all energy corners, 97.5% per pair, sample-size estimate.
+- [ ] **P2-T6 (P1, CC ~1h)** fake agent (solve/nothing/crash/timeout/escape) + end-to-end tests + `aimpg replay` CLI with dry-run cost estimate and total cap.
+- [ ] **P2-T7 (P1, paid, Kumar confirms)** calibration: 2 commits × 3 setups × 2 repeats. Confirms usage rows and noise, then proposes the full run size and cost.
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Outside Review | Claude subagent (Codex not installed), auto in eng review | Independent 2nd opinion | 2 | unavailable (native fallback ran) | Phase 2: 8 findings, all folded in (R13–R18) |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 2 | CLEAR (PLAN) | Phase 2: 11 issues + 8 outside findings, 0 critical gaps |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **OUTSIDE COVERAGE:** codex / plan-review / unavailable (CLI not installed). A native Claude subagent fallback completed; it does not count as outside coverage.
+- **VERDICT:** ENG CLEARED for Phase 2 v1 (macOS, Python + JS/TS, 3 setups). Build P2-T1…T6, then the paid calibration (P2-T7) with Kumar's confirmation.
+
+NO UNRESOLVED DECISIONS
