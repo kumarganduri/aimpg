@@ -1,4 +1,4 @@
-"""`aimpg report`: print the fuel receipt for your local Claude Code usage."""
+"""`aimpg report` prints the fuel receipt for your local Claude Code usage; `aimpg replay` compares agent setups on your own past commits."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from aimpg.attribution import attribute
 from aimpg.gitkept import DAY
 from aimpg.logs import DEFAULT_ROOT, iter_log_files, parse_logs
 from aimpg.receipt import render
+from aimpg.replay import cli as replay_cli
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -20,7 +21,10 @@ def main(argv: list[str] | None = None) -> int:
     report.add_argument("--days", type=int, default=30, help="window size in days (default 30)")
     report.add_argument("--logs", type=Path, default=DEFAULT_ROOT, help="Claude Code projects dir")
     report.add_argument("--fetch", action="store_true", help="git fetch each repo first (uses the network)")
+    replay_cli.add_parser(sub)
     args = parser.parse_args(argv)
+    if args.command == "replay":
+        return replay_cli.main(args)
 
     if args.days <= 0:
         parser.error("--days must be positive")
