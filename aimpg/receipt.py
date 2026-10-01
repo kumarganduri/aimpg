@@ -20,11 +20,19 @@ KEPT = {Status.KEPT.value, Status.KEPT_SQUASH.value}
 @dataclass
 class TaskEnergy:
     task: Task
-    wh: WhRange
+    wh: WhRange  # direct: the final work burst before the commit
+    lead_up: WhRange  # earlier bursts since the previous commit
+
+    @property
+    def total(self) -> WhRange:
+        return self.wh + self.lead_up
 
 
 def task_energy(tasks: list[Task]) -> list[TaskEnergy]:
-    return [TaskEnergy(t, weighted_wh(t.requests, t.weights)) for t in tasks]
+    return [
+        TaskEnergy(t, weighted_wh(t.requests, t.weights), weighted_wh(t.lead_up, t.lead_up_weights))
+        for t in tasks
+    ]
 
 
 def first_n_share(requests: list[Request], n: int = 10) -> float:
@@ -55,7 +63,8 @@ def _day(ts: float) -> str:
 def render(parsed: ParseResult, attribution: Attribution, since: float, now: float) -> str:
     in_window = [r for r in parsed.requests if r.ts >= since]
     energies = task_energy(attribution.tasks)
-    attributed = sum((e.wh for e in energies), ZERO)
+    attributed = sum((e.total for e in energies), ZERO)
+    lead_up = sum((e.lead_up for e in energies), ZERO)
     everything = total_wh(in_window)
     lines: list[str] = []
     add = lines.append
@@ -82,7 +91,9 @@ def render(parsed: ParseResult, attribution: Attribution, since: float, now: flo
         f"  {'matched to commits ':.<44} {_fmt_wh(attributed)}  ({len(energies)} commits: "
         f"{tiers['exact']} exact, {tiers['fuzzy']} fuzzy, {tiers['grace']} grace)"
     )
-    exact_wh = sum((e.wh for e in energies if e.task.attribution == "exact"), ZERO)
+    if lead_up.high > 0:
+        add(f"    {'of which lead-up (work before a 2h+ break) ':.<42} {_fmt_wh(lead_up)}")
+    exact_wh = sum((e.total for e in energies if e.task.attribution == "exact"), ZERO)
     in_repo = attributed + total_wh(attribution.unattributed.get(NO_COMMIT_YET, []))
     if in_repo.mid > 0:
         add(f"  exact-match share of in-repo energy: {exact_wh.mid / in_repo.mid:.0%}, any match: {attributed.mid / in_repo.mid:.0%}")
@@ -98,25 +109,26 @@ def render(parsed: ParseResult, attribution: Attribution, since: float, now: flo
         for status in STATUS_ORDER:
             group = by_status.get(status)
             if group:
-                add(f"  {status:<25}{len(group):>5}   {_fmt_wh(sum((e.wh for e in group), ZERO))}")
+                add(f"  {status:<25}{len(group):>5}   {_fmt_wh(sum((e.total for e in group), ZERO))}")
         kept = [e for e in energies if e.task.status in KEPT]
         if kept:
             med = WhRange(statistics.median(e.wh.low for e in kept), statistics.median(e.wh.high for e in kept))
             add("")
-            add(f"Median energy per kept commit: {_fmt_wh(med)}")
+            add(f"Median direct energy per kept commit: {_fmt_wh(med)}")
         decided = [e for e in energies if e.task.status in KEPT or e.task.status == Status.DISCARDED.value]
         if decided:
-            discarded = sum((e.wh for e in decided if e.task.status == Status.DISCARDED.value), ZERO)
-            share = discarded.mid / max(sum((e.wh for e in decided), ZERO).mid, 1e-12)
+            discarded = sum((e.total for e in decided if e.task.status == Status.DISCARDED.value), ZERO)
+            share = discarded.mid / max(sum((e.total for e in decided), ZERO).mid, 1e-12)
             add(f"Energy on commits later discarded: {share:.0%} (of commits with a decided status)")
         add("")
         # Commits made back-to-back share one segment; the later ones carry no
         # requests of their own, so they are left out of the rankings.
         ranked = sorted((e for e in energies if e.task.requests), key=lambda e: e.wh.mid, reverse=True)
         shared = len(energies) - len(ranked)
-        add("Most energy-hungry commits:")
+        add("Most energy-hungry commits (direct, + lead-up):")
         for e in ranked[:3]:
-            add(f"  {_fmt_wh(e.wh):>24}  {Path(e.task.repo).name} {e.task.sha[:7]} {e.task.subject[:50]}")
+            extra = f" +{_fmt_wh(e.lead_up)}" if e.lead_up.high > 0 else ""
+            add(f"  {_fmt_wh(e.wh):>24}{extra}  {Path(e.task.repo).name} {e.task.sha[:7]} {e.task.subject[:45]}")
         if len(ranked) > 3:
             add("Leanest commits:")
             for e in ranked[-3:]:

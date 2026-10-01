@@ -14,7 +14,7 @@ AI energy in window .......................... 6.99 kWh – 57.39 kWh  (4,744 re
   exact-match share of in-repo energy: 84%, any match: 84%
   no commit from this session yet ............ 1.11 kWh – 9.38 kWh  (609 requests)
 
-Median energy per kept commit: 28.4 Wh – 216.8 Wh
+Median direct energy per kept commit: 27.2 Wh – 212.9 Wh
 
 Most energy-hungry commits:
        213.2 Wh – 1.71 kWh  my-app 2ef4297 fix: date parsing for day-first locales
@@ -36,7 +36,7 @@ Everything runs locally. `aimpg report` makes no network calls (unless you pass 
 ## How it matches requests to commits
 
 1. **Exact:** when the agent runs `git commit`, the commit lands while that tool call is running. We match commits to those call windows, including slow commits where pre-commit hooks run for minutes.
-2. **Time segments:** within a session, the requests made since the previous commit belong to the next one, in whatever repo it lands.
+2. **Time segments:** within a session, the requests made since the previous commit belong to the next one, in whatever repo it lands. A 2h+ break starts a new work burst. Only the final burst counts as the commit's *direct* energy, and earlier bursts are shown as *lead-up*.
 3. **Fuzzy (fallback):** commits you make by hand are matched only if you authored them (your `user.email`), within 2 hours of the session, and only if they touch files the session edited. Teammates' commits are never claimed.
 
 On the author's own history, a hand-labeled check of 20 commits matched 20/20 to the right session (`evals/`).
@@ -61,7 +61,7 @@ aimpg report [--days 30] [--logs ~/.claude/projects] [--fetch]
 ## Limits (honest list)
 
 - Claude Code logs only, for now.
-- A long session's requests all go to its next commit, so a commit at the end of days of planning can look expensive.
+- Work before a 2h+ break is reported as a commit's *lead-up*, separate from its *direct* energy. A multi-day feature that genuinely needed that earlier work will look cheaper in the direct number, so check the lead-up too.
 - Commits less than 7 days old show as `pending` until we can tell whether they were kept.
 
 ## Roadmap

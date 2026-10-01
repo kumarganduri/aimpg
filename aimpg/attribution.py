@@ -13,6 +13,10 @@ in. A session's cwd is often not the repo it works on (absolute paths,
     session s:   r r r [c1 in A] r r r r [c2 in B] r r
                  └── c1 ───┘  └──── c2 ─────┘  └ no commit yet
 
+Long sessions: a 2h+ pause starts a new work burst. Only the final burst
+before a commit is its direct energy; earlier bursts since the previous
+commit are reported as its "lead-up", never dropped.
+
 Tier 2 (fuzzy): a session's leftover requests (after its last exact
 commit) go to commits in any repo it worked in, made between its first leftover
 request and 2h after its last, authored by you (repo user.email) that touch a file the session edited
@@ -34,7 +38,8 @@ from aimpg.gitkept import DAY, Commit, GitError, KeptChecker, load_commits, repo
 from aimpg.model import CommitCall, ParseResult, Request, Task
 
 PAD = 2.0  # seconds; git timestamps are whole seconds
-GRACE = 2 * 3600.0  # hand commits often land a while after the session goes quiet
+GRACE = 2 * 3600.0
+BREAK = 2 * 3600.0  # a pause this long between requests starts a new work burst  # hand commits often land a while after the session goes quiet
 
 NOT_IN_REPO = "not in a git repo (or repo moved/deleted)"
 NO_COMMIT_YET = "no commit from this session yet"
@@ -130,9 +135,11 @@ def attribute(
         i = 0
         for repo, commit in _anchors(calls_by_session.get(session, []), commits_by_repo):
             task = task_for(repo, commit, "exact")
-            while i < len(group) and group[i].ts <= commit.ts + PAD:
-                task.add(group[i])
-                i += 1
+            j = i
+            while j < len(group) and group[j].ts <= commit.ts + PAD:
+                j += 1
+            _add_bursts(task, group[i:j], 1.0)
+            i = j
         if i < len(group):
             leftovers[session] = group[i:]
 
@@ -155,11 +162,24 @@ def attribute(
         for repo, commit in matches:
             task = task_for(repo, commit, "fuzzy" if commit.ts <= rest[-1].ts + PAD else "grace")
             share = max(commit.lines_changed, 1) / total_lines
-            for r in rest:
-                task.add(r, share)
+            _add_bursts(task, rest, share)
 
     result.tasks = sorted(tasks.values(), key=lambda t: t.ts)
     return result
+
+
+def _add_bursts(task: Task, segment: list[Request], weight: float) -> None:
+    """The final work burst before a commit is its direct cost; earlier bursts are lead-up.
+
+        r r r  ··· 2h+ break ···  r r  ··· 5h break ···  r r r [commit]
+        └ lead-up ┘                └ lead-up ┘           └ direct ┘
+    """
+    start = 0
+    for k in range(1, len(segment)):
+        if segment[k].ts - segment[k - 1].ts >= BREAK:
+            start = k
+    for k, r in enumerate(segment):
+        task.add(r, weight, lead_up=k < start)
 
 
 def _load_repo(repo: str, since: float, now: float, refresh: bool) -> tuple[list[Commit], dict[str, str], RepoInfo]:

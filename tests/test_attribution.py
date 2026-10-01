@@ -168,7 +168,10 @@ def test_fuzzy_energy_is_conserved(hand_world):
     from aimpg.energy import total_wh, weighted_wh
 
     result = attribute(hand_world["parsed"], hand_world["since"], hand_world["now"])
-    split = sum(weighted_wh(t.requests, t.weights).high for t in result.tasks)
+    split = sum(
+        weighted_wh(t.requests, t.weights).high + weighted_wh(t.lead_up, t.lead_up_weights).high
+        for t in result.tasks
+    )
     assert split == pytest.approx(total_wh(hand_world["parsed"].requests).high)
 
 
@@ -243,3 +246,49 @@ def test_session_cwd_elsewhere_still_attributed(tmp_path, write_log):
     (task,) = result.tasks
     assert task.sha == sha
     assert [r.id for r in task.requests] == ["r1", "req_tu1"]
+
+
+def test_work_before_a_long_break_is_lead_up_not_direct(tmp_path, write_log):
+    #   r1 r2 ··· 5h break ··· r3 [c1]   → direct: r3 + commit call, lead-up: r1 r2
+    now = time.time()
+    t = now - 20 * DAY
+    repo = Repo(tmp_path / "repo")
+    repo.commit({"a.py": "x = 0\n"}, "base", t - DAY)
+    cwd = str(repo.path)
+    late = t + 5 * 3600
+    sha = repo.commit({"a.py": "x = 1\n"}, "feat", late + 100)
+    log = write_log([
+        assistant("r1", iso(t + 10), cwd=cwd),
+        assistant("r2", iso(t + 60), cwd=cwd),
+        assistant("r3", iso(late + 10), cwd=cwd),
+        bash_call("tu1", "git commit -m feat", iso(late + 99), cwd=cwd),
+        tool_result("tu1", iso(late + 101), cwd=cwd),
+    ])
+    (task,) = attribute(parse_logs([log]), now - 30 * DAY, now).tasks
+    assert task.sha == sha
+    assert [r.id for r in task.requests] == ["r3", "req_tu1"]
+    assert [r.id for r in task.lead_up] == ["r1", "r2"]
+
+
+def test_short_pauses_stay_direct(world):
+    result = attribute(world["parsed"], world["since"], world["now"])
+    assert all(t.lead_up == [] for t in result.tasks)
+
+
+def test_receipt_shows_lead_up(tmp_path, write_log, capsys):
+    now = time.time()
+    t = now - 20 * DAY
+    repo = Repo(tmp_path / "repo")
+    repo.commit({"a.py": "x = 0\n"}, "base", t - DAY)
+    cwd = str(repo.path)
+    late = t + 5 * 3600
+    repo.commit({"a.py": "x = 1\n"}, "feat", late + 100)
+    log = write_log([
+        assistant("r1", iso(t + 10), cwd=cwd),
+        bash_call("tu1", "git commit -m feat", iso(late + 99), cwd=cwd),
+        tool_result("tu1", iso(late + 101), cwd=cwd),
+    ])
+    assert main(["report", "--logs", str(log.parent.parent)]) == 0
+    out = capsys.readouterr().out
+    assert "of which lead-up" in out
+    assert "Median direct energy per kept commit" in out

@@ -67,9 +67,18 @@ class Task:
     # session's leftover requests across commits by lines changed.
     weights: list[float] = field(default_factory=list)
 
-    def add(self, request: Request, weight: float = 1.0) -> None:
-        self.requests.append(request)
-        self.weights.append(weight)
+    # Earlier work bursts (separated by a 2h+ break) since the previous
+    # commit: shown next to the commit, but not counted as its direct cost.
+    lead_up: list[Request] = field(default_factory=list)
+    lead_up_weights: list[float] = field(default_factory=list)
+
+    def add(self, request: Request, weight: float = 1.0, *, lead_up: bool = False) -> None:
+        if lead_up:
+            self.lead_up.append(request)
+            self.lead_up_weights.append(weight)
+        else:
+            self.requests.append(request)
+            self.weights.append(weight)
 
 
 @dataclass
