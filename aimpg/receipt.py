@@ -9,12 +9,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from aimpg.attribution import NO_COMMIT_YET, Attribution
-from aimpg.energy import ZERO, WhRange, load_factors, model_class, request_wh, total_wh, weighted_wh
+from aimpg.energy import ZERO, WhRange, load_factors, model_class, total_wh, weighted_wh
 from aimpg.gitkept import Status
-from aimpg.model import ParseResult, Request, Task
+from aimpg.model import ParseResult, Task
 
 STATUS_ORDER = [s.value for s in Status] + ["git error"]
 KEPT = {Status.KEPT.value, Status.KEPT_SQUASH.value}
+METHOD_URL = "https://github.com/kumarganduri/aimpg#how-energy-is-estimated"
 
 
 @dataclass
@@ -33,20 +34,6 @@ def task_energy(tasks: list[Task]) -> list[TaskEnergy]:
         TaskEnergy(t, weighted_wh(t.requests, t.weights), weighted_wh(t.lead_up, t.lead_up_weights))
         for t in tasks
     ]
-
-
-def first_n_share(requests: list[Request], n: int = 10) -> float:
-    """Share of energy (geometric-mid) spent in the first n requests of each session."""
-    by_session: dict[str, list[Request]] = defaultdict(list)
-    for r in requests:
-        by_session[r.session_id].append(r)
-    first = total = 0.0
-    for group in by_session.values():
-        group.sort(key=lambda r: r.ts)
-        mids = [request_wh(r).mid for r in group]
-        first += sum(mids[:n])
-        total += sum(mids)
-    return 0.0 if total == 0 else first / total
 
 
 def _fmt_wh(r: WhRange) -> str:
@@ -92,7 +79,7 @@ def render(parsed: ParseResult, attribution: Attribution, since: float, now: flo
         f"{tiers['exact']} exact, {tiers['fuzzy']} fuzzy, {tiers['grace']} grace)"
     )
     if lead_up.high > 0:
-        add(f"    {'of which lead-up (work before a 2h+ break) ':.<42} {_fmt_wh(lead_up)}")
+        add(f"    {'of which lead-up (before a 2h+ break) ':.<42} {_fmt_wh(lead_up)}")
     exact_wh = sum((e.total for e in energies if e.task.attribution == "exact"), ZERO)
     in_repo = attributed + total_wh(attribution.unattributed.get(NO_COMMIT_YET, []))
     if in_repo.mid > 0:
@@ -137,13 +124,12 @@ def render(parsed: ParseResult, attribution: Attribution, since: float, now: flo
             add(f"  ({shared} commits were made right after another with no AI requests in between)")
         add("")
 
-    add(f"Energy in the first 10 requests of each session: {first_n_share(in_window):.0%}")
     stale = [Path(repo).name for repo, info in attribution.repos.items() if info.error]
     if stale:
         add(f"Git problems (statuses unknown): {', '.join(sorted(stale))}")
     add("")
     add(
         f"Energy is a low–high range (factors v{load_factors()['version']}): model sizes are not disclosed, "
-        "so classes are assumptions. Method: docs/designs/aimpg-design.md"
+        f"so classes are assumptions. Method: {METHOD_URL}"
     )
     return "\n".join(lines) + "\n"

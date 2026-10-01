@@ -292,3 +292,29 @@ def test_receipt_shows_lead_up(tmp_path, write_log, capsys):
     out = capsys.readouterr().out
     assert "of which lead-up" in out
     assert "Median direct energy per kept commit" in out
+
+
+def test_receipt_layout_for_installed_users(tmp_path, write_log, capsys):
+    # 0.1.1 regressions: values line up, the method is a URL (PyPI users have
+    # no docs/ folder), and the noisy first-10-requests line is gone.
+    now = time.time()
+    t = now - 20 * DAY
+    repo = Repo(tmp_path / "repo")
+    repo.commit({"a.py": "x = 0\n"}, "base", t - DAY)
+    cwd = str(repo.path)
+    late = t + 5 * 3600
+    repo.commit({"a.py": "x = 1\n"}, "feat", late + 100)
+    log = write_log([
+        assistant("r1", iso(t + 10), cwd=cwd),
+        bash_call("tu1", "git commit -m feat", iso(late + 99), cwd=cwd),
+        tool_result("tu1", iso(late + 101), cwd=cwd),
+        assistant("r9", iso(late + 500), cwd=cwd),
+    ])
+    main(["report", "--logs", str(log.parent.parent)])
+    out = capsys.readouterr().out
+    assert "https://github.com/kumarganduri/aimpg" in out
+    assert "docs/designs" not in out
+    assert "first 10 requests" not in out
+    dotted = [line for line in out.splitlines() if " .." in line and ("Wh" in line or "kWh" in line)]
+    assert len(dotted) >= 3
+    assert len({line.index(" ", line.rindex("..")) for line in dotted}) == 1  # one value column
