@@ -124,6 +124,7 @@ Root problem chosen: **invisibility**. Of the five kinds of AI waste mapped in t
    Setups with `token_source: none` (possibly Cursor) are excluded from rankings until they expose usage. v1 ships only `claude-code` and `claude-code+rtk`.
 4. **No answer leakage + safety (D7, 5A, contract; details in the Phase 2 eng review):**
    - The replay workdir is a fresh shallow clone at the parent commit, with no future refs, tags or reflog.
+   - **Updated after spike (2026-10-01):** no Docker. Runs use Legwork's Seatbelt (macOS) / bwrap (Linux) sandbox plus a local allowlisting proxy; see `spikes/egress/RESULTS.md`. Original contract text follows.
    - Each run happens in a Docker container. Only that clone is mounted (read-write). Nothing from `$HOME` is mounted, so the agent can't read the real repo.
    - Network egress is limited to the model API, so the agent can't search GitHub for the merged commit.
    - The API key comes in through an env var. The user's agent config directory is never mounted.

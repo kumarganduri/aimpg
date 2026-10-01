@@ -18,10 +18,11 @@
 - **Context:** Outside voice finding 5, 2026-10-01 eng review. It affects Success Criteria (Phase 2) and the Phase 3 gate.
 - **Depends on:** Phase 2 harness.
 
-### Network-limit spike for the replay sandbox
+### Network-limit spike for the replay sandbox (macOS: DONE 2026-10-01, see spikes/egress/RESULTS.md)
 - **What:** A time-boxed spike to make the replay container reach only the model API. Docker can't restrict outbound traffic by domain on its own, so it needs an allowlisting CONNECT proxy on an internal Docker network. Check what Legwork's sandbox actually does first.
 - **Why:** The approved sandbox contract (eng review D7) promises "egress limited to the model API" but had no build plan or estimate.
 - **Pros:** Makes the "no GitHub cheating" promise real.
 - **Cons:** TLS through a proxy and the CLI's proxy settings can be fiddly per agent CLI.
 - **Context:** Outside voice finding 7. Estimate: human ~1-2 days / CC ~2 hrs. It should be the first task of Phase 2.
+- **Result:** macOS works without Docker: Seatbelt allows only a local port, and an allowlisting CONNECT proxy reaches only api.anthropic.com. Remaining: the real `claude -p` run inside it, and the Linux (bwrap) variant.
 - **Depends on:** Nothing. It can be spiked any time.

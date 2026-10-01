@@ -1,0 +1,8 @@
+(version 1)
+(deny default)
+(allow process-exec process-fork signal sysctl-read mach-lookup)
+(allow file-read*)
+(allow file-write* (subpath "/private/tmp/aimpg-spike-work") (literal "/dev/null"))
+;; network: only the local allowlisting proxy
+(allow network-outbound (remote ip "localhost:18123"))
+(allow network-outbound (literal "/private/var/run/mDNSResponder"))
