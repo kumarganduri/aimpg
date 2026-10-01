@@ -1,0 +1,63 @@
+{
+  "version": "2026-10-01",
+  "constants": {
+    "joules_per_flop": {
+      "value": 0.52e-12,
+      "citation": "From Tokens to Watt-hours (arXiv 2607.26571): tensor-core coefficient alpha_TC = 0.52 pJ/FLOP, H100 BF16"
+    },
+    "joules_per_hbm_bit": {
+      "value": 11.68e-12,
+      "citation": "From Tokens to Watt-hours (arXiv 2607.26571): HBM energy e_HBM = 11.68 pJ/bit, H100"
+    }
+  },
+  "ranges": {
+    "overhead": {
+      "low": 1.25,
+      "high": 1.5,
+      "citation": "EcoLogits LLM inference methodology: non-GPU server power 1.2 kW per 8-GPU server, provider PUE 1.09-1.20"
+    },
+    "batch_size": {
+      "low": 128,
+      "high": 32,
+      "citation": "Assumption. EcoLogits fixes B=64; we bracket it. Larger batches amortize weight reads, so 128 is the low-energy end"
+    },
+    "weight_bits": {
+      "low": 8,
+      "high": 16,
+      "citation": "Assumption: FP8 to BF16 serving precision"
+    },
+    "kv_bits_per_token": {
+      "low": 0.5e6,
+      "high": 3.0e6,
+      "citation": "Assumption: 2 x layers x kv_heads x head_dim x bytes for GQA models (e.g. 80x8x128x2x2 bytes = 2.6 Mbit BF16); FP8/compressed caches are lower"
+    },
+    "prefill_inefficiency": {
+      "low": 1.0,
+      "high": 2.0,
+      "citation": "Assumption: static power and sub-peak utilization during prefill on top of pure FLOP energy"
+    },
+    "kv_reload_multiplier": {
+      "low": 0.0,
+      "high": 4.0,
+      "citation": "Assumption: a cache read is free if the prefix is still in HBM (low) or costs a reload from host memory at about 4x HBM read energy (high)"
+    }
+  },
+  "classes": {
+    "large": {
+      "active_params_billion": {"low": 100, "high": 400},
+      "matches": ["opus", "fable"],
+      "citation": "Assumption: parameter counts are not disclosed for frontier closed models"
+    },
+    "mid": {
+      "active_params_billion": {"low": 30, "high": 150},
+      "matches": ["sonnet"],
+      "citation": "Assumption: parameter counts are not disclosed for frontier closed models"
+    },
+    "small": {
+      "active_params_billion": {"low": 8, "high": 40},
+      "matches": ["haiku"],
+      "citation": "Assumption: parameter counts are not disclosed for frontier closed models"
+    }
+  },
+  "default_class": "mid"
+}

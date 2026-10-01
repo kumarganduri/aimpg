@@ -1,0 +1,17 @@
+name: publish
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # PyPI trusted publishing, no API token stored
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: git config --global user.email ci@example.com && git config --global user.name CI
+      - run: uv run --group dev pytest -q
+      - run: uv build
+      - run: uv publish --trusted-publishing always
