@@ -38,4 +38,7 @@ packages = ["aimpg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: performance tests (deselect with -m 'not slow')"]
+markers = [
+    "slow: performance tests (deselect with -m 'not slow')",
+    "network: needs internet (PyPI) for replay end-to-end tests",
+]
