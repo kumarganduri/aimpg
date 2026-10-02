@@ -56,3 +56,18 @@ def test_declining_the_cost_prompt_spends_nothing(tmp_path, monkeypatch, capsys)
     out = capsys.readouterr().out
     assert "2 commits × 2 setups × 2 repeats = 8 agent runs" in out
     assert "Nothing was spent" in out
+
+
+def test_rtk_hook_goes_only_into_the_throwaway_config(tmp_path):
+    import shutil
+
+    import pytest
+
+    from aimpg.replay.setups import RTK
+
+    if shutil.which("rtk") is None:
+        pytest.skip("rtk not installed")
+    RTK.configure(tmp_path)
+    settings = json.loads((tmp_path / "settings.json").read_text())
+    hooks = settings["hooks"]["PreToolUse"]
+    assert any(h["matcher"] == "Bash" and "rtk" in h["hooks"][0]["command"] for h in hooks)
