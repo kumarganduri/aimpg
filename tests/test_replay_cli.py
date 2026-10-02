@@ -71,3 +71,32 @@ def test_rtk_hook_goes_only_into_the_throwaway_config(tmp_path):
     settings = json.loads((tmp_path / "settings.json").read_text())
     hooks = settings["hooks"]["PreToolUse"]
     assert any(h["matcher"] == "Bash" and "rtk" in h["hooks"][0]["command"] for h in hooks)
+
+
+def _req(i, cw, cr, out, sidechain=False, ts=None):
+    from aimpg.model import Request, Usage
+
+    return Request(f"r{i}", "s", "claude-sonnet-5-5", ts if ts is not None else float(i), Usage(2, cw, cr, out), "/w", sidechain)
+
+
+def test_token_check_matches_the_last_main_request_like_real_claude_code():
+    # Numbers from the first paid calibration: 6 main + 3 sub-agent requests;
+    # the result's `usage` is only the final main request (18,606 tokens).
+    from aimpg.replay.run import _check_tokens
+
+    main = [_req(0, 5823, 10334, 83), _req(1, 218, 16157, 116), _req(2, 251, 16375, 105),
+            _req(3, 229, 16626, 228), _req(4, 674, 16855, 13), _req(9, 878, 17529, 197)]
+    sub = [_req(5, 7103, 0, 135, True), _req(6, 223, 7103, 148, True), _req(7, 280, 7326, 338, True)]
+    reported = {"input_tokens": 2, "cache_creation_input_tokens": 878, "cache_read_input_tokens": 17529, "output_tokens": 197}
+    assert _check_tokens(main + sub, {"usage": reported}) == ("ok (last request)", False)
+
+    totals = sum(r.usage.fresh_in + r.usage.cache_write + r.usage.cache_read + r.usage.output for r in main + sub)
+    mu = {"claude-sonnet-5-5": {"inputTokens": 18, "cacheCreationInputTokens": 0, "cacheReadInputTokens": totals - 18, "outputTokens": 0}}
+    assert _check_tokens(main + sub, {"usage": reported, "modelUsage": mu}) == ("ok (last request + totals)", False)
+
+    truncated = main[:-1] + sub  # transcript missing its last request
+    assert _check_tokens(truncated, {"usage": reported})[1] is True
+    mu_off = {"m": {"inputTokens": totals * 2}}
+    assert _check_tokens(main + sub, {"usage": reported, "modelUsage": mu_off})[1] is True
+    assert _check_tokens([], {"usage": reported}) == ("empty transcript", True)
+    assert _check_tokens(main, {})[1] is False  # no usage reported: unverified, not an error

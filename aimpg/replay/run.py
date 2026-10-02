@@ -103,19 +103,37 @@ def _agent_env(work: Path, cfg: Path, proxy: AllowlistProxy, api_key: str) -> di
 
 
 def _check_tokens(requests, result: dict) -> tuple[str, bool]:
-    """(tokens_check, is_harness_error). The transcript must exist and match stdout totals."""
+    """(tokens_check, is_harness_error). Is the transcript this run's, and complete?
+
+    Claude Code's `usage` in the final JSON is the LAST request's usage, not a
+    total (found in the first paid calibration: 18,606 reported = exactly the
+    final request, while the transcript held 9 requests / 125k tokens). So:
+    the transcript's last main-agent request must match it exactly. If the
+    result also carries per-model running totals (`modelUsage`), those must
+    match the transcript sum within 2%.
+    """
     if not requests:
         return "empty transcript", True
     reported = result.get("usage")
     if not isinstance(reported, dict):
         return "unverified (no usage in result)", False
-    ours = sum(r.usage.fresh_in + r.usage.cache_write + r.usage.cache_read + r.usage.output for r in requests)
-    theirs = sum(int(reported.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
-    if theirs == 0:
-        return "unverified (zero usage reported)", False
-    if abs(ours - theirs) / theirs > TOKEN_TOLERANCE:
-        return f"transcript tokens {ours} vs reported {theirs}", True
-    return "ok", False
+    main = [r for r in requests if not r.is_sidechain]
+    if not main:
+        return "no main-agent requests in transcript", True
+    last = sorted(main, key=lambda r: r.ts)[-1].usage  # stable: ties keep transcript order
+    want = (int(reported.get("input_tokens") or 0), int(reported.get("cache_creation_input_tokens") or 0),
+            int(reported.get("cache_read_input_tokens") or 0), int(reported.get("output_tokens") or 0))
+    if (last.fresh_in, last.cache_write, last.cache_read, last.output) != want:
+        return f"last request {last} != reported {want}", True
+    totals = result.get("modelUsage")
+    if isinstance(totals, dict) and totals:
+        keys = ("inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens")
+        theirs = sum(int(m.get(k) or 0) for m in totals.values() if isinstance(m, dict) for k in keys)
+        ours = sum(r.usage.fresh_in + r.usage.cache_write + r.usage.cache_read + r.usage.output for r in requests)
+        if theirs and abs(ours - theirs) / theirs > TOKEN_TOLERANCE:
+            return f"transcript total {ours} vs modelUsage {theirs}", True
+        return "ok (last request + totals)", False
+    return "ok (last request)", False
 
 
 def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Config, *, attempt: int = 0, solution: Path | None = None) -> Record:
@@ -155,6 +173,7 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
         blocked = proxy.blocked()
 
     result = parse_result(res.stdout)
+    (cfgdir / "result.json").write_text(json.dumps(result, indent=1))  # audit trail (no key in it)
     parsed = parse_logs(iter_log_files(cfgdir / "projects"))
     usages = [(r.usage.fresh_in, r.usage.cache_write, r.usage.cache_read, r.usage.output) for r in parsed.requests]
     cost = float(result.get("total_cost_usd") or 0.0)

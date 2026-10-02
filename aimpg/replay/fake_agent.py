@@ -22,11 +22,13 @@ import uuid
 from pathlib import Path
 
 
-def transcript(cfg: Path, cwd: Path, model: str, n: int) -> dict:
+def transcript(cfg: Path, cwd: Path, model: str, n: int) -> tuple[dict, dict]:
+    """Writes n requests. Returns (last request's usage, running totals), like Claude Code."""
     session = str(uuid.uuid4())
     folder = cfg / "projects" / str(cwd).replace("/", "-")
     folder.mkdir(parents=True, exist_ok=True)
     totals = {"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0}
+    usage = dict(totals)
     with open(folder / f"{session}.jsonl", "w") as fh:
         for i in range(n):
             usage = {"input_tokens": 5, "cache_creation_input_tokens": 3000, "cache_read_input_tokens": 9000 * (i + 1), "output_tokens": 400}
@@ -36,13 +38,17 @@ def transcript(cfg: Path, cwd: Path, model: str, n: int) -> dict:
                 "type": "assistant",
                 "sessionId": session,
                 "cwd": str(cwd),
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + f".{i:03d}Z",
                 "requestId": f"req_fake_{session[:8]}_{i}",
                 "version": "fake",
                 "message": {"id": f"msg_{i}", "model": model, "content": [{"type": "text", "text": "..."}], "usage": usage},
             }
             fh.write(json.dumps(row) + "\n")
-    return totals
+            fh.write(json.dumps(row) + "\n")  # real transcripts repeat rows per content block
+    model_usage = {model: {"inputTokens": totals["input_tokens"], "outputTokens": totals["output_tokens"],
+                           "cacheReadInputTokens": totals["cache_read_input_tokens"],
+                           "cacheCreationInputTokens": totals["cache_creation_input_tokens"]}}
+    return usage, model_usage
 
 
 def escape_attempts(cwd: Path, cfg: Path) -> list[str]:
@@ -81,11 +87,11 @@ def main() -> int:
         transcript(cfg, cwd, model, 1)
         time.sleep(3600)
     if mode == "crash":
-        result["usage"] = transcript(cfg, cwd, model, 1)
+        result["usage"], result["modelUsage"] = transcript(cfg, cwd, model, 1)
         result.update(subtype="error_during_execution", is_error=True)
         print(json.dumps(result))
         return 1
-    result["usage"] = transcript(cfg, cwd, model, 3)
+    result["usage"], result["modelUsage"] = transcript(cfg, cwd, model, 3)
     if mode == "budget":
         result.update(subtype="error_max_budget_usd", is_error=True)
     if mode == "escape":
