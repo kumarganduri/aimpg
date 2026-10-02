@@ -131,7 +131,9 @@ def _check_tokens(requests, result: dict) -> tuple[str, bool]:
         theirs = sum(int(m.get(k) or 0) for m in totals.values() if isinstance(m, dict) for k in keys)
         ours = sum(r.usage.fresh_in + r.usage.cache_write + r.usage.cache_read + r.usage.output for r in requests)
         if theirs and abs(ours - theirs) / theirs > TOKEN_TOLERANCE:
-            return f"transcript total {ours} vs modelUsage {theirs}", True
+            # modelUsage's exact definition is unverified (no saved result yet):
+            # warn and keep the run; the exact last-request match above is the gate.
+            return f"warn: transcript total {ours} vs modelUsage {theirs}", False
         return "ok (last request + totals)", False
     return "ok (last request)", False
 

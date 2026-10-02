@@ -97,6 +97,7 @@ def test_token_check_matches_the_last_main_request_like_real_claude_code():
     truncated = main[:-1] + sub  # transcript missing its last request
     assert _check_tokens(truncated, {"usage": reported})[1] is True
     mu_off = {"m": {"inputTokens": totals * 2}}
-    assert _check_tokens(main + sub, {"usage": reported, "modelUsage": mu_off})[1] is True
+    check, error = _check_tokens(main + sub, {"usage": reported, "modelUsage": mu_off})
+    assert check.startswith("warn:") and error is False  # recorded, not fatal, until verified
     assert _check_tokens([], {"usage": reported}) == ("empty transcript", True)
     assert _check_tokens(main, {})[1] is False  # no usage reported: unverified, not an error
