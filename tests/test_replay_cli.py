@@ -79,25 +79,17 @@ def _req(i, cw, cr, out, sidechain=False, ts=None):
     return Request(f"r{i}", "s", "claude-sonnet-5-5", ts if ts is not None else float(i), Usage(2, cw, cr, out), "/w", sidechain)
 
 
-def test_token_check_matches_the_last_main_request_like_real_claude_code():
-    # Numbers from the first paid calibration: 6 main + 3 sub-agent requests;
-    # the result's `usage` is only the final main request (18,606 tokens).
+def test_token_check_uses_model_usage_totals_like_real_claude_code():
+    # From the paid calibration runs: `usage` was the last request in one run and
+    # the total in another, so only modelUsage (running totals) is trusted.
     from aimpg.replay.run import _check_tokens
 
-    main = [_req(0, 5823, 10334, 83), _req(1, 218, 16157, 116), _req(2, 251, 16375, 105),
-            _req(3, 229, 16626, 228), _req(4, 674, 16855, 13), _req(9, 878, 17529, 197)]
-    sub = [_req(5, 7103, 0, 135, True), _req(6, 223, 7103, 148, True), _req(7, 280, 7326, 338, True)]
-    reported = {"input_tokens": 2, "cache_creation_input_tokens": 878, "cache_read_input_tokens": 17529, "output_tokens": 197}
-    assert _check_tokens(main + sub, {"usage": reported}) == ("ok (last request)", False)
+    reqs = [_req(0, 5766, 10325, 209), _req(1, 295, 16091, 88), _req(2, 220, 16386, 161), _req(3, 282, 16606, 568)]
+    mu = {"claude-sonnet-5-5": {"inputTokens": 8, "outputTokens": 1026, "cacheReadInputTokens": 59408, "cacheCreationInputTokens": 6563, "maxOutputTokens": 128000}}
+    assert _check_tokens(reqs, {"modelUsage": mu}) == ("ok", False)
+    last_only = {"input_tokens": 2, "cache_creation_input_tokens": 282, "cache_read_input_tokens": 16606, "output_tokens": 568}
+    assert _check_tokens(reqs, {"usage": last_only, "modelUsage": mu}) == ("ok", False)  # usage ignored
 
-    totals = sum(r.usage.fresh_in + r.usage.cache_write + r.usage.cache_read + r.usage.output for r in main + sub)
-    mu = {"claude-sonnet-5-5": {"inputTokens": 18, "cacheCreationInputTokens": 0, "cacheReadInputTokens": totals - 18, "outputTokens": 0}}
-    assert _check_tokens(main + sub, {"usage": reported, "modelUsage": mu}) == ("ok (last request + totals)", False)
-
-    truncated = main[:-1] + sub  # transcript missing its last request
-    assert _check_tokens(truncated, {"usage": reported})[1] is True
-    mu_off = {"m": {"inputTokens": totals * 2}}
-    check, error = _check_tokens(main + sub, {"usage": reported, "modelUsage": mu_off})
-    assert check.startswith("warn:") and error is False  # recorded, not fatal, until verified
-    assert _check_tokens([], {"usage": reported}) == ("empty transcript", True)
-    assert _check_tokens(main, {})[1] is False  # no usage reported: unverified, not an error
+    assert _check_tokens(reqs[:-1], {"modelUsage": mu})[1] is True  # transcript missing a request
+    assert _check_tokens([], {"modelUsage": mu}) == ("empty transcript", True)
+    assert _check_tokens(reqs, {}) == ("unverified (no modelUsage in result)", False)

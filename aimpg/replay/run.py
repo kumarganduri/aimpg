@@ -105,37 +105,25 @@ def _agent_env(work: Path, cfg: Path, proxy: AllowlistProxy, api_key: str) -> di
 def _check_tokens(requests, result: dict) -> tuple[str, bool]:
     """(tokens_check, is_harness_error). Is the transcript this run's, and complete?
 
-    Claude Code's `usage` in the final JSON is the LAST request's usage, not a
-    total (found in the first paid calibration: 18,606 reported = exactly the
-    final request, while the transcript held 9 requests / 125k tokens). So:
-    the transcript's last main-agent request must match it exactly. If the
-    result also carries per-model running totals (`modelUsage`), those must
-    match the transcript sum within 2%.
+    Learned from the first paid calibration runs: Claude Code's `usage` field
+    is unreliable as a check (in one run it was the LAST request, in another
+    the TOTAL of all requests). `modelUsage` (running totals per model,
+    sub-agents included) matched the transcript exactly in both, so it is the
+    gate: transcript total must match it within 2%.
     """
     if not requests:
         return "empty transcript", True
-    reported = result.get("usage")
-    if not isinstance(reported, dict):
-        return "unverified (no usage in result)", False
-    main = [r for r in requests if not r.is_sidechain]
-    if not main:
-        return "no main-agent requests in transcript", True
-    last = sorted(main, key=lambda r: r.ts)[-1].usage  # stable: ties keep transcript order
-    want = (int(reported.get("input_tokens") or 0), int(reported.get("cache_creation_input_tokens") or 0),
-            int(reported.get("cache_read_input_tokens") or 0), int(reported.get("output_tokens") or 0))
-    if (last.fresh_in, last.cache_write, last.cache_read, last.output) != want:
-        return f"last request {last} != reported {want}", True
+    ours = sum(r.usage.fresh_in + r.usage.cache_write + r.usage.cache_read + r.usage.output for r in requests)
     totals = result.get("modelUsage")
     if isinstance(totals, dict) and totals:
         keys = ("inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens")
         theirs = sum(int(m.get(k) or 0) for m in totals.values() if isinstance(m, dict) for k in keys)
-        ours = sum(r.usage.fresh_in + r.usage.cache_write + r.usage.cache_read + r.usage.output for r in requests)
-        if theirs and abs(ours - theirs) / theirs > TOKEN_TOLERANCE:
-            # modelUsage's exact definition is unverified (no saved result yet):
-            # warn and keep the run; the exact last-request match above is the gate.
-            return f"warn: transcript total {ours} vs modelUsage {theirs}", False
-        return "ok (last request + totals)", False
-    return "ok (last request)", False
+        if theirs == 0:
+            return "unverified (modelUsage is zero)", False
+        if abs(ours - theirs) / theirs > TOKEN_TOLERANCE:
+            return f"transcript total {ours} vs modelUsage {theirs}", True
+        return "ok", False
+    return "unverified (no modelUsage in result)", False
 
 
 def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Config, *, attempt: int = 0, solution: Path | None = None) -> Record:

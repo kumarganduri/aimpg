@@ -90,7 +90,7 @@ def test_solving_agent_passes_with_tokens_from_transcript(prepared):
     layout, commit, _, solution = prepared
     rec = run_one(commit, fake("solve"), 0, layout, cfg(), solution=solution)
     assert rec.outcome == "passed", rec.note
-    assert rec.tokens_check == "ok (last request + totals)"
+    assert rec.tokens_check == "ok"
     assert len(rec.usages) == 3 and rec.usages[0] == [5, 3000, 9000, 400]
 
 
