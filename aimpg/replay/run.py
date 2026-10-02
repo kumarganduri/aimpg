@@ -140,7 +140,10 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
     cfgdir = layout.run_dir(run_id) / "cfg"
     cfgdir.mkdir(parents=True)
     if setup.configure:
-        setup.configure(cfgdir)
+        try:
+            setup.configure(cfgdir)
+        except Exception as exc:  # never let one setup's tooling crash the batch
+            return record("harness_error", note=f"setup configure failed: {exc}"[:500])
     if solution is not None:  # fake agent tests only
         shutil.copy(solution, cfgdir / "solution.tar")
 
@@ -207,6 +210,12 @@ class Batch:
     def run(self, on_record=None) -> list[Record]:
         for s in self.setups:
             s.check()
+            if s.configure:  # dry run before any spending: a broken setup fails here, for free
+                probe = self.layout.root / "setup-check" / s.name
+                shutil.rmtree(probe, ignore_errors=True)
+                probe.mkdir(parents=True)
+                s.configure(probe)
+                shutil.rmtree(probe, ignore_errors=True)
         if self.cfg.api_key:
             preflight_key(self.cfg.api_key)
         with AllowlistProxy() as proxy:  # Phase A, one commit at a time

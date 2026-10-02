@@ -60,7 +60,16 @@ class Setup:
 def _rtk_configure(cfg: Path) -> None:
     """Install RTK's Claude Code hook into the run's throwaway config (never the user's)."""
     env = {"HOME": str(cfg), "CLAUDE_CONFIG_DIR": str(cfg), "PATH": "/usr/bin:/bin:" + str(Path(shutil.which("rtk") or "").parent)}
-    proc = subprocess.run(["rtk", "init", "--global", "--auto-patch"], env=env, capture_output=True, text=True)
+    # Never interactive: from a real terminal rtk asks yes/no questions and
+    # waits forever (found in calibration). No stdin, explicit answers, timeout.
+    proc = subprocess.run(
+        ["rtk", "init", "--global", "--auto-patch", "--no-trust-filters"],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
     settings = [p for p in (cfg / "settings.json", cfg / ".claude" / "settings.json") if p.exists()]
     if proc.returncode != 0 or not settings:
         raise SetupUnavailable(f"rtk init did not create a hook config: {(proc.stderr or proc.stdout)[-300:]}")
