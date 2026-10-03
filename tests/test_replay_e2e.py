@@ -179,3 +179,23 @@ def test_commit_whose_tests_only_check_names_is_dropped(tmp_path_factory):
     assert not check.ok
     assert "hint would give it away" in check.reason
     assert check.details["passed_with_stubs"] is True
+
+
+def test_tests_mode_shows_tests_but_cheating_cannot_pass(prepared):
+    from aimpg.replay.run import task_text
+
+    layout, commit, _, solution = prepared
+    assert "tests/test_mul.py" in task_text(commit, "tests") and "without editing them" in task_text(commit, "tests")
+    cheat = run_one(commit, fake("cheat"), 0, layout, cfg(task_mode="tests"))
+    assert "tests/test_mul.py" in cheat.note  # it really saw and rewrote the shown test
+    assert cheat.outcome == "tests_failed"  # originals restored before judging
+    solved = run_one(commit, fake("solve"), 0, layout, cfg(task_mode="tests"), solution=solution)
+    assert solved.outcome == "passed"
+
+
+def test_hint_mode_keeps_tests_hidden(prepared):
+    from aimpg.replay.run import task_text
+
+    _, commit, _, _ = prepared
+    assert "tests/test_mul.py" not in task_text(commit, "hint")
+    assert task_text(commit, "hint") == commit.task

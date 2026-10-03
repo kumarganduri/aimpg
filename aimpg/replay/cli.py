@@ -46,6 +46,8 @@ def add_parser(sub) -> None:
         c.add_argument("--setups", default=DEFAULT_SETUPS)
         c.add_argument("--per-run-budget", type=float, default=2.0, help="USD cap per agent run (default 2)")
         c.add_argument("--yes", action="store_true", help="skip the cost confirmation prompt")
+        c.add_argument("--task-mode", choices=("hint", "tests"), default="hint",
+                       help="hint: commit message + new names, tests hidden (default); tests: commit's tests shown")
         if name == "run":
             c.add_argument("--commits", type=int, default=10)
             c.add_argument("--repeats", type=int, default=2)
@@ -110,14 +112,14 @@ def _paid(repos: list[Path], args, *, calibrate: bool) -> int:
     chosen = random.Random(7).sample(commits, n_commits)
     runs = n_commits * len(setups) * repeats
     cap = runs * args.per_run_budget if calibrate else args.cap
-    print(f"Plan: {n_commits} commits × {len(setups)} setups × {repeats} repeats = {runs} agent runs on {args.model}")
+    print(f"Plan: {n_commits} commits × {len(setups)} setups × {repeats} repeats = {runs} agent runs on {args.model} (task mode: {args.task_mode})")
     print(f"Per-run cap ${args.per_run_budget:.2f}; total cap ${cap:.2f} (worst case; usually far less).")
     if not args.yes and input("Spend up to that on your API key? [y/N] ").strip().lower() != "y":
         print("Stopped. Nothing was spent.")
         return 1
     out_dir = _state(repos[0]) if len(repos) == 1 else _state(Path("+".join(r.name for r in repos)))
-    results = out_dir / f"{'calibration' if calibrate else 'run'}-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
-    cfg = runner.Config(model=args.model, per_run_budget_usd=args.per_run_budget, total_cap_usd=cap, api_key=api_key)
+    results = out_dir / f"{'calibration' if calibrate else 'run'}-{args.task_mode}-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+    cfg = runner.Config(model=args.model, per_run_budget_usd=args.per_run_budget, total_cap_usd=cap, api_key=api_key, task_mode=args.task_mode)
     batch = runner.Batch(chosen, setups, repeats, Layout(ROOT), cfg, results)
 
     def show(rec: runner.Record) -> None:

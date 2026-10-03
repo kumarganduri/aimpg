@@ -87,7 +87,7 @@ FAKE_AGENT = Path(__file__).with_name("fake_agent.py")
 
 
 def fake(mode: str) -> Setup:
-    """Free stand-in agent for tests: solve | nothing | crash | timeout | budget | escape.
+    """Free stand-in agent for tests: solve | nothing | cheat | crash | timeout | budget | escape.
 
     The sandbox can't read the project's venv or source under $HOME, so the
     script is copied into the run's config dir and run with uv's real Python.

@@ -45,6 +45,19 @@ class Config:
     api_key: str = ""  # from the user's shell env only; never written anywhere
     parallel: int = 3
     timeout: float = AGENT_TIMEOUT
+    task_mode: str = "hint"  # "hint": message + interface hint, tests hidden | "tests": tests shown
+
+
+def task_text(commit: Commit, mode: str) -> str:
+    """What the agent is told. Identical for every setup in a batch."""
+    if mode != "tests":
+        return commit.task
+    message = (commit.subject + ("\n\n" + commit.body if commit.body.strip() else "")).strip()
+    files = "\n".join(f"- {f}" for f in commit.test_files)
+    return (
+        f"{message}\n\nThese test files describe the change and are already in the repo:\n{files}\n"
+        "Make them pass without editing them."
+    )
 
 
 @dataclass
@@ -137,6 +150,8 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
         work = workspace.clone_for_run(commit, layout, layout.prepared(commit.sha), run_id)
     except WorkspaceError as exc:
         return record("harness_error", note=f"clone: {exc}")
+    if cfg.task_mode == "tests":
+        workspace.overlay_commit_tests(commit, work)  # shown to the agent; restored before judging
     cfgdir = layout.run_dir(run_id) / "cfg"
     cfgdir.mkdir(parents=True)
     if setup.configure:
@@ -156,7 +171,7 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
             proxy_port=proxy.port,
         )
         res = sandbox.run(
-            setup.argv(commit.task, cfg.model, cfg.per_run_budget_usd, cfgdir),
+            setup.argv(task_text(commit, cfg.task_mode), cfg.model, cfg.per_run_budget_usd, cfgdir),
             profile=profile,
             profile_path=layout.profile_path(run_id),
             env=_agent_env(work, cfgdir, proxy, cfg.api_key),
@@ -173,6 +188,8 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
     note = f"blocked: {blocked[:5]}" if blocked else ""
     if result.get("escapes"):
         note += f" escapes: {result['escapes']}"
+    if result.get("rewrote"):  # fake agent tests only
+        note += f" rewrote: {result['rewrote']}"
 
     if res.timed_out:
         return record("timeout", usages=usages, cost=cost, check="n/a (timed out)", note=note)
@@ -187,7 +204,7 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
     if harness_error:
         return record("harness_error", usages=usages, cost=cost, check=check, note=note)
 
-    workspace.overlay_commit_tests(commit, work)
+    workspace.overlay_commit_tests(commit, work)  # always the originals: edits to tests can't help
     passed, tail = workspace.judge(commit, layout, work, run_id + "-judge")
     rec = record("passed" if passed else "tests_failed", usages=usages, cost=cost, check=check, note=note or ("" if passed else tail[-300:]))
     shutil.rmtree(work, ignore_errors=True)  # keep cfg (transcript) for audits, drop the code copy

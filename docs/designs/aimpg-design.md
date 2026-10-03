@@ -140,6 +140,8 @@ change code + tests        at parent commit     proxy: api.anthropic.com   test 
    - Why: in the first calibration every run failed before a single test ran, because hidden tests import names the commit invented and a commit message never says what things are called.
    - Fairness check (free, in selection): stub code that only creates the hinted names with empty values must still **fail** the tests. Otherwise the commit is dropped, because the hint would give the answer away.
    - Both setups get identical text.
+   - **First full run (2026-10-03, 80 runs, $13.19):** with hints, pass rates were 12% (plain) vs 10% (RTK). Only 1 commit was solved by both, so no verdict. Hidden tests check details a commit message never states (argument order, exact wording, new script files). Descriptive only: RTK's median energy was ~8% *higher*, and its cost $6.72 vs $6.46.
+   - **`--task-mode tests`:** the commit's tests are shown ("make these pass without editing them"). Originals are always restored before judging, so editing tests can't help (a fake cheating agent proves it). Tasks become easier than real work, but both setups face the same task.
 3. **Setups (R2 + R20):** all on the same model, so every comparison is fair:
    - `claude-code` (baseline);
    - `claude-code+terse`: adds a short "answer tersely, no recaps" `--append-system-prompt`, which is Caveman's core idea;

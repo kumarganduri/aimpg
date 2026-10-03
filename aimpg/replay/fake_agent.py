@@ -4,7 +4,8 @@
   (assistant rows with usage, like the real thing);
 * prints one JSON result to stdout (`--output-format json` shape).
 
-Modes: solve (apply the solution the test staged), nothing, crash, timeout,
+Modes: solve (apply the solution the test staged), nothing, cheat (rewrite
+visible tests to trivial ones), crash, timeout,
 budget (reports a budget stop), escape (tries to break out of the sandbox and
 reports what worked; everything should fail).
 
@@ -96,6 +97,12 @@ def main() -> int:
         result.update(subtype="error_max_budget_usd", is_error=True)
     if mode == "escape":
         result["escapes"] = escape_attempts(cwd, cfg)
+    if mode == "cheat":  # weakens every test file it can see; judging must undo this
+        result["rewrote"] = []
+        for test in cwd.rglob("test_*.py"):
+            if ".venv" not in test.parts:
+                test.write_text("def test_trivial():\n    pass\n")
+                result["rewrote"].append(str(test.relative_to(cwd)))
     if mode == "solve":
         with tarfile.open(cfg / "solution.tar") as tar:
             tar.extractall(cwd)
