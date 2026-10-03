@@ -48,10 +48,12 @@ class Commit:
     kind: str = ""  # "python" | "js"
     runner: str = ""  # "pytest" | "vitest" | "jest"
     ts: float = 0.0
+    hint: str = ""  # interface hint: new names the hidden tests use (hints.py)
 
     @property
     def task(self) -> str:
-        return (self.subject + ("\n\n" + self.body if self.body.strip() else "")).strip()
+        message = (self.subject + ("\n\n" + self.body if self.body.strip() else "")).strip()
+        return message + ("\n\n" + self.hint if self.hint else "")
 
 
 @dataclass

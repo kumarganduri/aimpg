@@ -80,10 +80,16 @@ def cfg(**kw):
 
 def test_candidate_and_precheck(prepared):
     _, commit, check, _ = prepared
-    assert commit.task == "feat: add a mul() function that multiplies two numbers"
+    assert commit.task.startswith("feat: add a mul() function that multiplies two numbers")
+    assert "calc.py: mul" in commit.task  # interface hint: the new name the hidden test imports
     assert commit.test_files == ["tests/test_mul.py"] and commit.code_files == ["calc.py"]
     assert check.ok, check
-    assert check.details == {"passed_on_parent": [False, False], "passed_on_commit": [True, True]}
+    assert check.details == {
+        "passed_on_parent": [False, False],
+        "passed_on_commit": [True, True],
+        "passed_with_stubs": False,  # `mul = None` can't satisfy the test: the hint gives nothing away
+        "hint": {"calc.py": ["mul"]},
+    }
 
 
 def test_solving_agent_passes_with_tokens_from_transcript(prepared):
@@ -143,3 +149,33 @@ def test_batch_writes_every_run_and_respects_the_cap(prepared, tmp_path):
     # 0.49 → run 1 (reserve to 0.99, settles at 0.50) → run 2 (reserve 1.00, settles 0.51)
     # → run 3 would reserve 1.01 > 1.00: not started.
     assert len(room_for_one.run()) == 2
+
+
+def test_commit_whose_tests_only_check_names_is_dropped(tmp_path_factory):
+    # The hidden test passes as soon as the name exists: an interface hint would
+    # hand over the answer, so the stub check must reject this commit.
+    repo = tmp_path_factory.mktemp("giveaway")
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "me@example.com")
+    git(repo, "config", "user.name", "Me")
+    (repo / "pyproject.toml").write_text(PYPROJECT)
+    (repo / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    subprocess.run(["uv", "lock", "--quiet"], cwd=repo, check=True)
+    git(repo, "add", "-A")
+    now = time.time()
+    git(repo, "commit", "-q", "-m", "base: the add function", when=now - 3 * 86400)
+    (repo / "calc.py").write_text("def add(a, b):\n    return a + b\n\n\nVERSION = '1.0'\n")
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_version.py").write_text("import calc\n\n\ndef test_has_version():\n    calc.VERSION  # only checks the name exists\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "feat: expose a version string for the calc module", when=now - 2 * 86400)
+    (commit,), _ = candidates(str(repo), now - 30 * 86400, cutoff=0)
+    layout = Layout(Path("/private/tmp") / f"aimpg-e2e-giveaway-{int(now)}")
+    try:
+        with AllowlistProxy() as proxy:
+            check = precheck(commit, layout, proxy)
+    finally:
+        shutil.rmtree(layout.root, ignore_errors=True)
+    assert not check.ok
+    assert "hint would give it away" in check.reason
+    assert check.details["passed_with_stubs"] is True

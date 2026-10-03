@@ -136,7 +136,10 @@ change code + tests        at parent commit     proxy: api.anthropic.com   test 
    - Commit message of at least 6 words.
    - Committed after the model's training cutoff, so the model can't have memorized it. This resolves the memorization TODO.
    - **Fail→pass pre-check:** the commit's test files applied to the parent code must fail, and on the commit itself must pass, twice each. Flaky tests are dropped.
-2. **Task (R3):** commit subject plus body, presented as an issue. The commit's tests are hidden from the agent. Both setups get identical text.
+2. **Task (R3, revised after paid calibration):** commit subject plus body, presented as an issue, **plus an interface hint**: the new names the hidden tests import, file by file (e.g. `legwork/llm_client.py: RATE_LIMIT_RETRY_ATTEMPTS`). Names only, never test code.
+   - Why: in the first calibration every run failed before a single test ran, because hidden tests import names the commit invented and a commit message never says what things are called.
+   - Fairness check (free, in selection): stub code that only creates the hinted names with empty values must still **fail** the tests. Otherwise the commit is dropped, because the hint would give the answer away.
+   - Both setups get identical text.
 3. **Setups (R2 + R20):** all on the same model, so every comparison is fair:
    - `claude-code` (baseline);
    - `claude-code+terse`: adds a short "answer tersely, no recaps" `--append-system-prompt`, which is Caveman's core idea;

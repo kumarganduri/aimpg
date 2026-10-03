@@ -17,7 +17,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from aimpg.gitkept import load_commits, user_email
-from aimpg.replay import workspace
+from aimpg.replay import hints, workspace
 from aimpg.replay.proxy import AllowlistProxy
 from aimpg.replay.workspace import TEST_FILE, Commit, Layout, Precheck, WorkspaceError
 
@@ -69,20 +69,32 @@ def precheck(commit: Commit, layout: Layout, proxy: AllowlistProxy) -> Precheck:
     if kind is None:
         return Precheck(False, "unsupported repo (needs pytest + uv.lock, or vitest/jest + package-lock.json)")
     commit.kind, commit.runner = kind
+    hint = hints.for_commit(commit)
+    commit.hint = hint.text()
+    name = f"precheck-{commit.sha[:12]}"
     try:
         prepared = workspace.prepare(commit, layout, proxy)
         before = []
-        work = workspace.clone_for_run(commit, layout, prepared, f"precheck-{commit.sha[:12]}")
+        work = workspace.clone_for_run(commit, layout, prepared, name)
         workspace.overlay_commit_tests(commit, work)
         for i in range(2):
-            before.append(workspace.judge(commit, layout, work, f"precheck-{commit.sha[:12]}")[0])
+            before.append(workspace.judge(commit, layout, work, name)[0])
+        stub_passed = None
+        if hint.names:  # the hint alone must never be enough: names with empty values must FAIL
+            stub_work = workspace.clone_for_run(commit, layout, prepared, name + "-stub")
+            hints.write_stubs(hint, stub_work, commit.kind)
+            workspace.overlay_commit_tests(commit, stub_work)
+            stub_passed = workspace.judge(commit, layout, stub_work, name + "-stub")[0]
         workspace.overlay_commit_tree(commit, work)
-        after = [workspace.judge(commit, layout, work, f"precheck-{commit.sha[:12]}")[0] for _ in range(2)]
+        after = [workspace.judge(commit, layout, work, name)[0] for _ in range(2)]
     except WorkspaceError as exc:
         return Precheck(False, f"setup failed: {str(exc)[:200]}")
     finally:
-        shutil.rmtree(layout.run_dir(f"precheck-{commit.sha[:12]}"), ignore_errors=True)
-    details = {"passed_on_parent": before, "passed_on_commit": after}
+        shutil.rmtree(layout.run_dir(name), ignore_errors=True)
+        shutil.rmtree(layout.run_dir(name + "-stub"), ignore_errors=True)
+    details = {"passed_on_parent": before, "passed_on_commit": after, "passed_with_stubs": stub_passed, "hint": dict(hint.names)}
+    if stub_passed:
+        return Precheck(False, "tests pass with empty stubs of the hinted names (hint would give it away)", details)
     if before != [False, False] or after != [True, True]:
         if len(set(before)) > 1 or len(set(after)) > 1:
             return Precheck(False, "flaky tests", details)
