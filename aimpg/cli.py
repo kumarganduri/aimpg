@@ -4,6 +4,7 @@
     pr        AI energy + cost of the current branch's commits (markdown; --post to the PR)
     export    one CSV row per AI-assisted commit, for teams and sustainability reports
     replay    compare agent setups and models on your own past commits
+    live      install/uninstall the live status line + post-commit note in Claude Code
 """
 
 from __future__ import annotations
@@ -51,10 +52,34 @@ def main(argv: list[str] | None = None) -> int:
     export.add_argument("--no-subjects", action="store_true", help="leave commit messages out (privacy)")
     export.add_argument("--no-authors", action="store_true", help="leave author emails out (privacy)")
 
+    live = sub.add_parser("live", help="live status line + post-commit note inside Claude Code")
+    live.add_argument("action", choices=("install", "uninstall"))
+    sub.add_parser("statusline", help=argparse.SUPPRESS)  # called by Claude Code
+    hook = sub.add_parser("hook", help=argparse.SUPPRESS)  # called by Claude Code
+    hook.add_argument("event", choices=("post-commit",))
+
     replay_cli.add_parser(sub)
     args = parser.parse_args(argv)
     if args.command == "replay":
         return replay_cli.main(args)
+    if args.command in ("statusline", "hook", "live"):
+        from aimpg import live as live_mod
+
+        if args.command == "statusline":
+            return live_mod.run_statusline(live_mod.previous_statusline())
+        if args.command == "hook":
+            return live_mod.run_post_commit_hook()
+        if args.action == "install":
+            import shutil
+
+            exe = shutil.which("aimpg")
+            if exe is None:
+                print("Install aimpg permanently first so Claude Code can call it:  uv tool install aimpg")
+                return 1
+            print(live_mod.install(exe=exe))
+        else:
+            print(live_mod.uninstall())
+        return 0
 
     if args.days <= 0:
         parser.error("--days must be positive")
