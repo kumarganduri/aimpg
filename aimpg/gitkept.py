@@ -54,6 +54,8 @@ class Commit:
     author_email: str = ""
     files: dict[str, tuple[int, int]] = field(default_factory=dict)  # path -> (added, deleted)
     added: dict[str, set[str]] = field(default_factory=dict)  # path -> meaningful added lines
+    removed: dict[str, set[str]] = field(default_factory=dict)  # path -> meaningful removed lines (rework detection)
+    message: str = ""  # full message body (revert detection); filled by load_commits
 
     @property
     def lines_changed(self) -> int:
@@ -182,6 +184,9 @@ def _parse_patch_log(text: str) -> list[Commit]:
             elif line.startswith("-"):
                 a, d = commit.files[current]
                 commit.files[current] = (a, d + 1)
+                stripped = line[1:].strip()
+                if len(stripped) >= _MIN_LINE:
+                    commit.removed.setdefault(current, set()).add(stripped)
         commits.append(commit)
     return commits
 

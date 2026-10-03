@@ -206,7 +206,11 @@ def compute_baseline() -> dict:
     now = time.time()
     parsed = parse_logs(iter_log_files())
     attribution = attribute(parsed, now - 30 * 86400, now)
-    energies = [e for e in task_energy(attribution.tasks) if e.task.requests]
+    all_energies = task_energy(attribution.tasks)
+    from aimpg import ledger
+
+    ledger.record(all_energies)  # the daily refresh also keeps the history growing
+    energies = [e for e in all_energies if e.task.requests]
     kept = [e for e in energies if e.task.status in KEPT]
     pool = kept if len(kept) >= 5 else energies
     data = {

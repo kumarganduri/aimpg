@@ -110,7 +110,12 @@ def main(argv: list[str] | None = None) -> int:
             print("\nPosted to the pull request.")
         return 0
 
-    sys.stdout.write(render(parsed, attribution, since, now))
+    from aimpg import durable, ledger
+    from aimpg.receipt import task_energy
+
+    ledger.record(task_energy(attribution.tasks))
+    judged = durable.judge(ledger.load(), now)
+    sys.stdout.write(render(parsed, attribution, since, now, judged))
     return 0
 
 

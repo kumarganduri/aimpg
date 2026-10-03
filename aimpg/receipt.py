@@ -94,7 +94,29 @@ def _day(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
-def render(parsed: ParseResult, attribution: Attribution, since: float, now: float) -> str:
+def working_changes(judged) -> list[str]:
+    from aimpg.durable import MATURE_AFTER, day
+
+    lines = ["WORKING CHANGES (commits that shipped and lasted 30 days)"]
+    if not judged.judged:
+        first = judged.first_judgeable()
+        when = f" on {day(first + MATURE_AFTER)}" if first else " once your AI-assisted commits are 30 days old"
+        lines.append(f"  Available{when}: aimpg is keeping your history so it can tell.")
+        return lines
+    n, d = len(judged.judged), len(judged.durable)
+    cpd, waste = judged.cost_per_durable(), judged.waste_ratio()
+    lines.append(f"  {d} of {n} judged commits are working changes ({d / n:.0%})"
+                 f" · {len(judged.reverted)} reverted · {len(judged.reworked)} reworked · {len(judged.not_kept)} never shipped")
+    if cpd is not None:
+        lines.append(f"  Cost per working change: {_usd(cpd)}  (AI spend on judged commits ÷ working changes)")
+    if waste is not None:
+        lines.append(f"  Waste ratio: {waste:.0%} of that AI spend went into work that didn't last")
+    if judged.too_new:
+        lines.append(f"  ({len(judged.too_new)} newer commits will be judged as they turn 30 days old)")
+    return lines
+
+
+def render(parsed: ParseResult, attribution: Attribution, since: float, now: float, judged=None) -> str:
     in_window = [r for r in parsed.requests if r.ts >= since]
     energies = task_energy(attribution.tasks)
     attributed = sum((e.total for e in energies), ZERO)
@@ -116,6 +138,9 @@ def render(parsed: ParseResult, attribution: Attribution, since: float, now: flo
                 add(f"     {t.measured}.")
                 add(f"     ≈ {equivalence.everyday(t.saving_wh)}")
                 add(f"     → {t.action}.")
+        if judged is not None:
+            add("")
+            lines.extend(working_changes(judged))
         add("")
         add("DETAILS")
     skipped = parsed.stats.get("skipped_requests", 0) + parsed.stats.get("corrupt_rows", 0)
