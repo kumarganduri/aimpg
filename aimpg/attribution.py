@@ -124,6 +124,7 @@ def attribute(
                 subject=commit.subject,
                 attribution=attribution,
                 status=status_by_repo.get(repo, {}).get(commit.sha, GIT_FAILED),
+                author=commit.author_email,
             )
         return tasks[key]
 

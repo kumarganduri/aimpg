@@ -72,6 +72,7 @@ class Task:
     # commit: shown next to the commit, but not counted as its direct cost.
     lead_up: list[Request] = field(default_factory=list)
     lead_up_weights: list[float] = field(default_factory=list)
+    author: str = ""  # commit author email (team export)
 
     def add(self, request: Request, weight: float = 1.0, *, lead_up: bool = False) -> None:
         if lead_up:

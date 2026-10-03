@@ -1,4 +1,10 @@
-"""`aimpg report` prints the fuel receipt for your local Claude Code usage; `aimpg replay` compares agent setups on your own past commits."""
+"""aimpg: energy receipts for AI coding.
+
+    report    the fuel receipt for your Claude Code usage, with measured tips
+    pr        AI energy + cost of the current branch's commits (markdown; --post to the PR)
+    export    one CSV row per AI-assisted commit, for teams and sustainability reports
+    replay    compare agent setups and models on your own past commits
+"""
 
 from __future__ import annotations
 
@@ -7,6 +13,7 @@ import sys
 import time
 from pathlib import Path
 
+from aimpg import share
 from aimpg.attribution import attribute
 from aimpg.gitkept import DAY
 from aimpg.logs import DEFAULT_ROOT, iter_log_files, parse_logs
@@ -14,13 +21,36 @@ from aimpg.receipt import render
 from aimpg.replay import cli as replay_cli
 
 
+def _common(p: argparse.ArgumentParser, days: int) -> None:
+    p.add_argument("--days", type=int, default=days, help=f"window size in days (default {days})")
+    p.add_argument("--logs", type=Path, default=DEFAULT_ROOT, help="Claude Code projects dir")
+    p.add_argument("--fetch", action="store_true", help="git fetch each repo first (uses the network)")
+
+
+def _analyze(args):
+    now = time.time()
+    since = now - args.days * DAY
+    parsed = parse_logs(iter_log_files(args.logs))
+    return parsed, attribute(parsed, since, now, refresh=args.fetch), since, now
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="aimpg", description=__doc__)
+    parser = argparse.ArgumentParser(prog="aimpg", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    report = sub.add_parser("report", help="print the energy receipt")
-    report.add_argument("--days", type=int, default=30, help="window size in days (default 30)")
-    report.add_argument("--logs", type=Path, default=DEFAULT_ROOT, help="Claude Code projects dir")
-    report.add_argument("--fetch", action="store_true", help="git fetch each repo first (uses the network)")
+    _common(sub.add_parser("report", help="print the energy receipt"), 30)
+
+    pr = sub.add_parser("pr", help="AI energy and cost of this branch's commits, as a PR comment")
+    _common(pr, 90)
+    pr.add_argument("--repo", type=Path, default=Path("."), help="repo to summarize (default: current folder)")
+    pr.add_argument("--base", default="main", help="base branch (default main)")
+    pr.add_argument("--post", action="store_true", help="add the summary as a comment on the open PR (uses gh)")
+
+    export = sub.add_parser("export", help="one CSV row per AI-assisted commit")
+    _common(export, 30)
+    export.add_argument("--csv", type=Path, required=True, help="output file")
+    export.add_argument("--no-subjects", action="store_true", help="leave commit messages out (privacy)")
+    export.add_argument("--no-authors", action="store_true", help="leave author emails out (privacy)")
+
     replay_cli.add_parser(sub)
     args = parser.parse_args(argv)
     if args.command == "replay":
@@ -31,11 +61,30 @@ def main(argv: list[str] | None = None) -> int:
     if not args.logs.is_dir():
         print(f"No Claude Code logs found at {args.logs}. Nothing to report.")
         return 0
+    parsed, attribution, since, now = _analyze(args)
 
-    now = time.time()
-    since = now - args.days * DAY
-    parsed = parse_logs(iter_log_files(args.logs))
-    attribution = attribute(parsed, since, now, refresh=args.fetch)
+    if args.command == "export":
+        rows = share.csv_rows(attribution, subjects=not args.no_subjects, authors=not args.no_authors)
+        share.write_csv(rows, args.csv)
+        print(f"Wrote {len(rows)} commits to {args.csv}")
+        return 0
+    if args.command == "pr":
+        try:
+            shas = share.branch_commits(args.repo, args.base)
+        except RuntimeError as exc:
+            print(f"Can't list this branch's commits: {exc}")
+            return 1
+        markdown = share.pr_markdown(attribution, shas, args.repo.resolve().name)
+        sys.stdout.write(markdown)
+        if args.post:
+            try:
+                share.post_comment(markdown, args.repo)
+            except RuntimeError as exc:
+                print(f"\nNot posted: {exc}")
+                return 1
+            print("\nPosted to the pull request.")
+        return 0
+
     sys.stdout.write(render(parsed, attribution, since, now))
     return 0
 
