@@ -233,7 +233,8 @@ class Batch:
     excluded: set[str] = field(default_factory=set)
     stopped: str = ""  # set when the account can't make calls; no new runs start
     done: set[tuple[str, str, int]] = field(default_factory=set)  # (commit, setup, repeat) already recorded (--resume)
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _lock: threading.Condition = field(default_factory=threading.Condition)
+    _in_flight: int = 0
 
     def run(self, on_record=None) -> list[Record]:
         for s in self.setups:
@@ -262,17 +263,32 @@ class Batch:
     def _job(self, commit: Commit, setup: Setup, repeat: int) -> Record | None:
         for attempt in range(2):
             with self._lock:
-                if self.stopped or commit.sha in self.excluded:
-                    return None
-                if self.spent + self.cfg.per_run_budget_usd > self.cfg.total_cap_usd:
-                    return None  # would risk crossing the cap: stop launching
+                # Running jobs hold a worst-case reservation. If this run doesn't fit
+                # yet, WAIT for them to settle to their real (usually far lower) cost;
+                # give up only if it can't fit even with nothing in flight.
+                # (Found in the first model-picker run: 11 of 30 runs were skipped.)
+                while True:
+                    if self.stopped or commit.sha in self.excluded:
+                        return None
+                    if self.spent + self.cfg.per_run_budget_usd <= self.cfg.total_cap_usd:
+                        break
+                    if self._in_flight == 0:
+                        return None  # the cap is genuinely reached
+                    self._lock.wait()
                 self.spent += self.cfg.per_run_budget_usd  # reserve the worst case
-            rec = run_one(commit, setup, repeat, self.layout, self.cfg, attempt=attempt, solution=self.solutions.get(commit.sha))
+                self._in_flight += 1
+            try:
+                rec = run_one(commit, setup, repeat, self.layout, self.cfg, attempt=attempt, solution=self.solutions.get(commit.sha))
+            finally:
+                with self._lock:
+                    self._in_flight -= 1
+                    self._lock.notify_all()
             with self._lock:
                 self.spent += rec.cost_usd - self.cfg.per_run_budget_usd  # settle to actual
                 self._append(rec)
                 if rec.outcome == "account_error":
                     self.stopped = rec.note
+                self._lock.notify_all()
             if rec.outcome != "harness_error":
                 return rec
         with self._lock:

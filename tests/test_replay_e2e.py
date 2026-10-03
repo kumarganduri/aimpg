@@ -213,3 +213,12 @@ def test_no_credit_stops_the_batch_and_is_never_held_against_the_agent(prepared,
     assert len(results.read_text().splitlines()) == 1  # stopped after the first, no more launches
     loaded, _ = load_results(results)
     assert loaded == []  # not counted as an agent failure
+
+
+def test_parallel_runs_wait_for_reservations_instead_of_skipping(prepared, tmp_path):
+    # Cap $1.20 with $0.50 reserved per run and 3 in parallel: only 2 fit at once,
+    # but each settles to $0.01, so all 6 runs must happen (they used to be skipped).
+    layout, commit, _, _ = prepared
+    batch = Batch([commit], [fake("nothing")], repeats=6, layout=layout, cfg=Config("m", 0.5, 1.2, parallel=3), results=tmp_path / "w.jsonl")
+    assert len(batch.run()) == 6
+    assert batch.spent < 0.1
