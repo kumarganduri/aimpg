@@ -102,3 +102,11 @@ def test_every_factor_has_a_citation():
     data = load_factors()
     entries = list(data["constants"].values()) + list(data["ranges"].values()) + list(data["classes"].values())
     assert all(e.get("citation") for e in entries)
+
+
+def test_calibration_against_googles_disclosed_median_prompt():
+    # Same full-stack boundary as Google's 0.24 Wh median Gemini text prompt
+    # (arXiv 2508.15734): a chat-sized prompt on a mid-size model must bracket it.
+    r = request_wh(req("claude-sonnet-5-5", fresh_in=600, output=400))
+    assert r.low < 0.24 < r.high
+    assert load_factors()["ranges"]["overhead"]["low"] >= 1.5  # host + idle + PUE, not PUE only

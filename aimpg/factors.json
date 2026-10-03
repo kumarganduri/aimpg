@@ -1,20 +1,20 @@
 {
-  "version": "2026-10-01",
+  "version": "2026-10-03b",
   "constants": {
     "joules_per_flop": {
-      "value": 0.52e-12,
+      "value": 5.2e-13,
       "citation": "From Tokens to Watt-hours (arXiv 2607.26571): tensor-core coefficient alpha_TC = 0.52 pJ/FLOP, H100 BF16"
     },
     "joules_per_hbm_bit": {
-      "value": 11.68e-12,
+      "value": 1.168e-11,
       "citation": "From Tokens to Watt-hours (arXiv 2607.26571): HBM energy e_HBM = 11.68 pJ/bit, H100"
     }
   },
   "ranges": {
     "overhead": {
-      "low": 1.25,
-      "high": 1.5,
-      "citation": "EcoLogits LLM inference methodology: non-GPU server power 1.2 kW per 8-GPU server, provider PUE 1.09-1.20"
+      "low": 1.5,
+      "high": 2.0,
+      "citation": "Full-stack boundary per Google's measured breakdown of a median Gemini prompt (0.24 Wh = accelerators 58%, host CPU/DRAM 25%, idle provisioned machines 10%, PUE overhead 8%), i.e. total \u2248 1.7x accelerator energy: https://arxiv.org/pdf/2508.15734 . Range 1.5-2.0 brackets leaner and less efficient fleets. Previously 1.25-1.5 (PUE + server only), which left out host and idle energy."
     },
     "batch_size": {
       "low": 128,
@@ -27,8 +27,8 @@
       "citation": "Assumption: FP8 to BF16 serving precision"
     },
     "kv_bits_per_token": {
-      "low": 0.5e6,
-      "high": 3.0e6,
+      "low": 500000.0,
+      "high": 3000000.0,
       "citation": "Assumption: 2 x layers x kv_heads x head_dim x bytes for GQA models (e.g. 80x8x128x2x2 bytes = 2.6 Mbit BF16); FP8/compressed caches are lower"
     },
     "prefill_inefficiency": {
@@ -44,20 +44,40 @@
   },
   "classes": {
     "large": {
-      "active_params_billion": {"low": 100, "high": 400},
-      "matches": ["opus", "fable"],
+      "active_params_billion": {
+        "low": 100,
+        "high": 400
+      },
+      "matches": [
+        "opus",
+        "fable"
+      ],
       "citation": "Assumption: parameter counts are not disclosed for frontier closed models"
     },
     "mid": {
-      "active_params_billion": {"low": 30, "high": 150},
-      "matches": ["sonnet"],
+      "active_params_billion": {
+        "low": 30,
+        "high": 150
+      },
+      "matches": [
+        "sonnet"
+      ],
       "citation": "Assumption: parameter counts are not disclosed for frontier closed models"
     },
     "small": {
-      "active_params_billion": {"low": 8, "high": 40},
-      "matches": ["haiku"],
+      "active_params_billion": {
+        "low": 8,
+        "high": 40
+      },
+      "matches": [
+        "haiku"
+      ],
       "citation": "Assumption: parameter counts are not disclosed for frontier closed models"
     }
   },
-  "default_class": "mid"
+  "default_class": "mid",
+  "calibration": {
+    "check": "A chat-sized prompt (600 input, 400 output tokens, no cache) on a mid-size model should bracket Google's disclosed 0.24 Wh median Gemini prompt (same full-stack boundary).",
+    "citation": "https://arxiv.org/pdf/2508.15734"
+  }
 }

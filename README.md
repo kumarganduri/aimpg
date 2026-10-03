@@ -8,28 +8,40 @@ uvx aimpg report
 
 ```
 YOUR AI CODING
-  Energy   11.34 kWh – 92.22 kWh
-           ≈ boiling a litre of water in a kettle 110–920 times · driving an electric car 67–540 km · 5.2–42.2 kg CO₂
-  Money    $1,210 API-equivalent (Anthropic's published prices)
-  Output   328 commits made with AI help
+  Energy   14.46 kWh – 130.59 kWh
+           ≈ boiling a litre of water in a kettle 140–1,300 times · driving an electric car 85–770 km · 6.6–59.8 kg CO₂
+  Money    $1,284 API-equivalent (Anthropic's published prices)
+  Output   353 commits made with AI help
 
-  A typical kept commit:  37.4 Wh – 283.5 Wh ≈ 2–17 full phone charges · $3.62
+  A typical kept commit:  36.6 Wh – 313.0 Wh ≈ 2–18 full phone charges · $2.05
 
 WHAT WOULD HAVE SAVED THE MOST (measured on your logs; upper bounds that overlap)
-  1. Start a fresh session after each commit: up to 44% less energy, $367
-     44% of your AI energy went to re-reading conversation from before your last commit.
+  1. Start a fresh session after each commit: up to 45% less energy, $397
+     45% of your AI energy went to re-reading conversation from before your last commit.
      → After committing, start a new session (or /clear) for the next task.
-  2. Use a mid-size model for routine work: up to 16% less energy, $316
+  2. Use a mid-size model for routine work: up to 16% less energy, $333
      94% of your AI energy ran on the largest models (Opus/Fable class).
      → Check a cheaper model is good enough on your own commits: `aimpg replay models`.
+
+WORKING CHANGES (commits that shipped and lasted 30 days)
+  Available on 2026-10-22: aimpg is keeping your history so it can tell.
 ```
 
 *(Real output from the author's last 30 days.)*
 
 ## What you can do with it
 
+### 0. See it live while you work
+```bash
+uv tool install aimpg && aimpg live install     # shows the change, asks y/N, keeps a backup
+```
+```
+⚡ task $1.96 · usual $2.05 · ctx 160k (92% from before your last commit) · /clear ≈ -92% per request · 5h 63%
+```
+After the agent commits, one line for you only (never sent to the model): *"that commit cost $2.40 over 31 AI requests. 92% of the context is from earlier work: /clear before the next task saves ~92% per request."* Undo with `aimpg live uninstall`.
+
 ### 1. See your AI footprint in terms you can picture
-`aimpg report` reads the Claude Code logs already on your machine and ties every AI request to the git commit it produced. Energy is shown as an honest range and translated into kettles, phone charges, EV kilometres and CO₂. Money is the API-equivalent cost at Anthropic's published prices (for subscribers, what the same work would cost on the API).
+`aimpg report` reads the Claude Code (and Codex CLI) logs already on your machine and ties every AI request to the git commit it produced. Energy is shown as an honest range and translated into kettles, phone charges, EV kilometres and CO₂. Money is the API-equivalent cost at Anthropic's published prices (for subscribers, what the same work would cost on the API).
 
 ### 2. Get tips measured on your own habits, not generic advice
 The receipt replays your own logs under "what if" rules and tells you what would have saved the most, in Wh and dollars. For example: how much energy went into re-reading old conversation in long sessions, or into running the biggest model for routine fixes.
@@ -79,13 +91,15 @@ One row per AI-assisted commit: date, repo, energy range, CO₂ range and cost. 
 
 **Matching requests to commits:** when the agent runs `git commit`, the commit lands inside that tool call, so the match is exact. Within a session, requests since the previous commit belong to the next one. Work before a 2h+ break is shown separately as *lead-up*. Hand-made commits are matched only if you authored them and they touch files the session edited. On the author's history, a hand-labeled check matched 20/20 commits correctly (`evals/`).
 
-**Energy:** a physical formula, not a price proxy. Prefill compute for new input, one KV-cache re-read per output token (so long contexts cost more), plus datacenter overhead. Model sizes aren't public, so every number is a range. Sources for every factor are in [`aimpg/factors.json`](aimpg/factors.json), [`aimpg/prices.json`](aimpg/prices.json) and [`aimpg/equivalences.json`](aimpg/equivalences.json).
+**Working changes:** aimpg keeps a small history of what each commit cost (never prompts or code), because Claude Code deletes its own logs after 30 days. Once a commit is 30 days old, it is judged: still on the main branch and not reverted or largely rewritten counts as a *working change*. The receipt then shows **cost per working change** and a **waste ratio** (AI spend on work that didn't last).
+
+**Energy:** a physical formula, not a price proxy. Prefill compute for new input, one KV-cache re-read per output token (so long contexts cost more), plus datacenter overhead. Model sizes aren't public, so every number is a range. Overheads follow Google's full-stack measurement of a median Gemini prompt (chips, host CPU and memory, idle capacity, cooling ≈ 1.7× the chips alone), and a chat-sized prompt on a mid-size model comes out at 0.017–0.34 Wh, bracketing Google's disclosed 0.24 Wh ([arXiv 2508.15734](https://arxiv.org/pdf/2508.15734)). Sources for every factor are in [`aimpg/factors.json`](aimpg/factors.json), [`aimpg/prices.json`](aimpg/prices.json) and [`aimpg/equivalences.json`](aimpg/equivalences.json).
 
 **Replays:** each run starts from the code just before your commit, in a fresh, history-free copy, inside a macOS sandbox. The only network allowed is the model API, through an allowlisting proxy. Your own tests judge the result, and edited tests are always restored before judging. Every token count is cross-checked against Claude Code's own totals. Details are in [docs/designs/aimpg-design.md](docs/designs/aimpg-design.md).
 
 ## Limits (honest list)
 
-- Claude Code logs only, for now. Replays need macOS and an Anthropic API key (about $0.10–0.30 per run).
+- Claude Code and Codex CLI logs. Cursor keeps token usage on its servers, not on your machine, so it isn't covered yet. Codex's model prices aren't in the table yet; its requests count toward energy but are listed as unpriced. Replays need macOS and an Anthropic API key (about $0.10–0.30 per run).
 - Energy is an estimate with a wide range; dollars are close (within about 7% of Claude Code's own session totals on the author's logs).
 - Tips are upper bounds and overlap; they can't be added together.
 - Replays from commit messages alone are hard (12% solved on the author's repo); `--task-mode tests` shows the agent the tests, which makes tasks easier than real work but keeps comparisons fair.
