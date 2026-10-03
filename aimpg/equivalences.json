@@ -1,0 +1,24 @@
+{
+  "version": "2026-10-03",
+  "items": {
+    "kettle": {
+      "wh": 100,
+      "say": "boiling a litre of water in a kettle {n} times",
+      "citation": "About 0.1 kWh to boil 1 litre from tap temperature: https://techforyourkitchen.com/electric-kettles/how-much-electricity-does-it-take-to-boil-a-kettle/"
+    },
+    "phone": {
+      "wh": 17,
+      "say": "{n} full phone charges",
+      "citation": "Phone batteries hold ~15-19 Wh (e.g. 19.4 Wh Galaxy S24 Ultra; 4,000 mAh ≈ 15.4 Wh): https://www.androidpolice.com/mah-vs-wh-batteries-difference-guide/"
+    },
+    "ev_km": {
+      "wh": 170,
+      "say": "driving an electric car {n} km",
+      "citation": "EVs use ~15-18 kWh per 100 km in mixed driving: https://www.go-electra.com/en/newsroom/electric-car-consumption-kWh-100-km-and-cost-in-2026/"
+    }
+  },
+  "co2_g_per_kwh": {
+    "value": 458,
+    "citation": "World average electricity carbon intensity 2025, Ember Global Electricity Review 2026: https://ember-energy.org/latest-insights/global-electricity-review-2026/major-countries-and-regions/"
+  }
+}

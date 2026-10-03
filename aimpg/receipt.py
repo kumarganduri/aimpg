@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from aimpg import equivalence
 from aimpg.attribution import NO_COMMIT_YET, Attribution
+from aimpg.cost import total_cost
 from aimpg.energy import ZERO, WhRange, load_factors, model_class, total_wh, weighted_wh
 from aimpg.gitkept import Status
 from aimpg.model import ParseResult, Task
@@ -23,6 +25,8 @@ class TaskEnergy:
     task: Task
     wh: WhRange  # direct: the final work burst before the commit
     lead_up: WhRange  # earlier bursts since the previous commit
+    usd: float = 0.0  # direct, API-equivalent
+    lead_up_usd: float = 0.0
 
     @property
     def total(self) -> WhRange:
@@ -31,9 +35,51 @@ class TaskEnergy:
 
 def task_energy(tasks: list[Task]) -> list[TaskEnergy]:
     return [
-        TaskEnergy(t, weighted_wh(t.requests, t.weights), weighted_wh(t.lead_up, t.lead_up_weights))
+        TaskEnergy(
+            t,
+            weighted_wh(t.requests, t.weights),
+            weighted_wh(t.lead_up, t.lead_up_weights),
+            total_cost(t.requests, t.weights)[0],
+            total_cost(t.lead_up, t.lead_up_weights)[0],
+        )
         for t in tasks
     ]
+
+
+def _usd(x: float) -> str:
+    return f"${x:,.0f}" if x >= 100 else f"${x:,.2f}"
+
+
+def summary(in_window, energies: list[TaskEnergy]) -> list[str]:
+    """The plain-language top of the receipt: what it was like, in everyday terms."""
+    everything = total_wh(in_window)
+    usd, unknown = total_cost(in_window)
+    lines = [
+        "YOUR AI CODING",
+        f"  Energy   {_fmt_wh(everything)}",
+        f"           ≈ {equivalence.everyday(everything)}",
+        f"  Money    {_usd(usd)} API-equivalent (Anthropic's published prices"
+        + (f"; {unknown} requests from unpriced models left out)" if unknown else ")"),
+        f"  Output   {len(energies)} commits made with AI help",
+    ]
+    with_work = [e for e in energies if e.task.requests]
+    if with_work:
+        kept = [e for e in with_work if e.task.status in KEPT]
+        pool = kept if len(kept) >= 5 else with_work
+        typical = WhRange(statistics.median(e.wh.low for e in pool), statistics.median(e.wh.high for e in pool))
+        label = "A typical kept commit" if pool is kept else "A typical commit"
+        lines += [
+            "",
+            f"  {label + ':':<24}{_fmt_wh(typical)} ≈ {equivalence.phrase(typical, 'phone')}"
+            f" · {_usd(statistics.median(e.usd for e in pool))}",
+        ]
+        top = max(with_work, key=lambda e: e.wh.mid)
+        extra = f" (+{_fmt_wh(top.lead_up)} of earlier work)" if top.lead_up.high > 0 else ""
+        lines += [
+            f"  {'Most expensive commit:':<24}{Path(top.task.repo).name} {top.task.sha[:7]} \"{top.task.subject[:50]}\"",
+            f"  {'':<24}{_fmt_wh(top.wh)} ≈ {equivalence.phrase(top.wh, 'phone')} · {_usd(top.usd)}{extra}",
+        ]
+    return lines
 
 
 def _fmt_wh(r: WhRange) -> str:
@@ -58,6 +104,10 @@ def render(parsed: ParseResult, attribution: Attribution, since: float, now: flo
 
     add(f"aimpg receipt · {_day(since)} → {_day(now)}")
     add("")
+    if in_window:
+        lines.extend(summary(in_window, energies))
+        add("")
+        add("DETAILS")
     skipped = parsed.stats.get("skipped_requests", 0) + parsed.stats.get("corrupt_rows", 0)
     add(
         f"Read {parsed.stats.get('unique_requests', 0):,} AI requests from {parsed.stats.get('files', 0)} log files "

@@ -169,11 +169,18 @@ def _usage(raw: object) -> Usage | None:
                 "output_tokens",
             )
         ]
+        split = raw.get("cache_creation") if isinstance(raw.get("cache_creation"), dict) else {}
+        one_hour = int(split.get("ephemeral_1h_input_tokens") or 0)
+        # Thinking is generated text: it costs decode energy and is billed as output,
+        # but Claude Code logs it outside output_tokens (verified against logged
+        # session costs: 58/60 per-model totals match only when it's added).
+        details = raw.get("output_tokens_details") if isinstance(raw.get("output_tokens_details"), dict) else {}
+        values[3] += int(details.get("thinking_tokens") or 0)
     except (TypeError, ValueError):
         return None
-    if any(v < 0 for v in values):
+    if any(v < 0 for v in values) or one_hour < 0:
         return None
-    return Usage(*values)
+    return Usage(*values, cache_write_1h=min(one_hour, values[1]))
 
 
 _TOOL_USE_ID = re.compile(rb'"tool_use_id":\s*"([^"]+)"')

@@ -21,6 +21,7 @@ class Usage:
     cache_write: int = 0
     cache_read: int = 0
     output: int = 0
+    cache_write_1h: int = 0  # the part of cache_write held for 1h (priced higher; same energy)
 
     @property
     def ctx_len(self) -> int:

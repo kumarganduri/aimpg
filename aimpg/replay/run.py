@@ -133,7 +133,7 @@ def _check_tokens(requests, result: dict) -> tuple[str, bool]:
     ours = sum(r.usage.fresh_in + r.usage.cache_write + r.usage.cache_read + r.usage.output for r in requests)
     totals = result.get("modelUsage")
     if isinstance(totals, dict) and totals:
-        keys = ("inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens")
+        keys = ("inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens", "thinkingTokens")
         theirs = sum(int(m.get(k) or 0) for m in totals.values() if isinstance(m, dict) for k in keys)
         if theirs == 0:
             return "unverified (modelUsage is zero)", False
