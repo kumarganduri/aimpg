@@ -93,3 +93,19 @@ def test_token_check_uses_model_usage_totals_like_real_claude_code():
     assert _check_tokens(reqs[:-1], {"modelUsage": mu})[1] is True  # transcript missing a request
     assert _check_tokens([], {"modelUsage": mu}) == ("empty transcript", True)
     assert _check_tokens(reqs, {}) == ("unverified (no modelUsage in result)", False)
+
+
+def test_paid_run_combines_several_repos(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(replay_cli, "STATE", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-not-used")
+    from aimpg.replay import select
+    from aimpg.replay.workspace import Commit
+
+    for name, n in (("one", 2), ("two", 3)):
+        (tmp_path / name).mkdir()
+        select.save([Commit(f"/{name}", f"{name}{i:037d}", "p", "s", "", ["t.py"], ["a.py"]) for i in range(n)], tmp_path / name / "selected.jsonl")
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    assert main(["replay", "run", str(tmp_path / "one"), str(tmp_path / "two"), "--commits", "5", "--cap", "9", "--setups", "claude-code,claude-code+rtk"]) == 1
+    out = capsys.readouterr().out
+    assert "5 commits × 2 setups × 2 repeats = 20 agent runs" in out
+    assert "total cap $9.00" in out

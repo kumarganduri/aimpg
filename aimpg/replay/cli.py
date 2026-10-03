@@ -41,7 +41,7 @@ def add_parser(sub) -> None:
 
     for name, help_ in (("calibrate", "paid: measure cost and noise on 2 commits"), ("run", "paid: the full comparison")):
         c = rsub.add_parser(name, help=help_)
-        c.add_argument("repo", type=Path)
+        c.add_argument("repos", type=Path, nargs="+", help="one or more repos already run through `select`")
         c.add_argument("--model", default=DEFAULT_MODEL)
         c.add_argument("--setups", default=DEFAULT_SETUPS)
         c.add_argument("--per-run-budget", type=float, default=2.0, help="USD cap per agent run (default 2)")
@@ -66,10 +66,9 @@ def main(args: argparse.Namespace) -> int:
     cmd = args.replay_command
     if cmd == "stats":
         return _stats(args.results, args.baseline)
-    repo = args.repo.resolve()
     if cmd == "select":
-        return _select(repo, args)
-    return _paid(repo, args, calibrate=(cmd == "calibrate"))
+        return _select(args.repo.resolve(), args)
+    return _paid([r.resolve() for r in args.repos], args, calibrate=(cmd == "calibrate"))
 
 
 def _select(repo: Path, args) -> int:
@@ -93,16 +92,16 @@ def _select(repo: Path, args) -> int:
     return 0 if good else 1
 
 
-def _paid(repo: Path, args, *, calibrate: bool) -> int:
-    selected = _state(repo) / "selected.jsonl"
-    if not selected.exists():
-        print(f"Run `aimpg replay select {repo}` first.")
-        return 1
+def _paid(repos: list[Path], args, *, calibrate: bool) -> int:
+    for repo in repos:
+        if not (_state(repo) / "selected.jsonl").exists():
+            print(f"Run `aimpg replay select {repo}` first.")
+            return 1
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         print("Set ANTHROPIC_API_KEY in your shell first (Anthropic Console → API keys). aimpg never stores it.")
         return 1
-    commits = select.load(selected)
+    commits = [c for repo in repos for c in select.load(_state(repo) / "selected.jsonl")]
     setups = [SETUPS[name.strip()] for name in args.setups.split(",")]
     n_commits, repeats = (2, 2) if calibrate else (args.commits, args.repeats)
     if len(commits) < n_commits:
@@ -116,7 +115,8 @@ def _paid(repo: Path, args, *, calibrate: bool) -> int:
     if not args.yes and input("Spend up to that on your API key? [y/N] ").strip().lower() != "y":
         print("Stopped. Nothing was spent.")
         return 1
-    results = _state(repo) / f"{'calibration' if calibrate else 'run'}-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+    out_dir = _state(repos[0]) if len(repos) == 1 else _state(Path("+".join(r.name for r in repos)))
+    results = out_dir / f"{'calibration' if calibrate else 'run'}-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
     cfg = runner.Config(model=args.model, per_run_budget_usd=args.per_run_budget, total_cap_usd=cap, api_key=api_key)
     batch = runner.Batch(chosen, setups, repeats, Layout(ROOT), cfg, results)
 
