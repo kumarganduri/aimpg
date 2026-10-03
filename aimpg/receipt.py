@@ -10,6 +10,7 @@ from pathlib import Path
 
 from aimpg import equivalence
 from aimpg.attribution import NO_COMMIT_YET, Attribution
+from aimpg.coach import tips as coach_tips
 from aimpg.cost import total_cost
 from aimpg.energy import ZERO, WhRange, load_factors, model_class, total_wh, weighted_wh
 from aimpg.gitkept import Status
@@ -106,6 +107,15 @@ def render(parsed: ParseResult, attribution: Attribution, since: float, now: flo
     add("")
     if in_window:
         lines.extend(summary(in_window, energies))
+        found = coach_tips(in_window, attribution)
+        if found:
+            add("")
+            add("WHAT WOULD HAVE SAVED THE MOST (measured on your logs; upper bounds that overlap)")
+            for i, t in enumerate(found, 1):
+                add(f"  {i}. {t.title}: up to {t.share:.0%} less energy, {_usd(t.saving_usd)}")
+                add(f"     {t.measured}.")
+                add(f"     ≈ {equivalence.everyday(t.saving_wh)}")
+                add(f"     → {t.action}.")
         add("")
         add("DETAILS")
     skipped = parsed.stats.get("skipped_requests", 0) + parsed.stats.get("corrupt_rows", 0)
