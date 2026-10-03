@@ -76,7 +76,7 @@ Token savers, prompts, hooks, CLAUDE.md files, models, even other agents: one co
 aimpg verify --challenger rtk --claim "rtk saves tokens"          # a token saver
 aimpg verify --append-prompt "Be terse."                          # your own prompt (or --claude-md / --settings)
 aimpg verify --challenger haiku                                   # a cheaper model
-aimpg verify --challenger codex                                   # another agent (needs OPENAI_API_KEY)
+aimpg verify --challenger codex:gpt-6.1-sol                       # another agent (needs an OpenAI API key)
 aimpg verify --challenger "cmd:aider --yes --message {task}" --hosts api.openai.com --key-env OPENAI_API_KEY
 ```
 It shows the plan and the worst-case cost, and spends nothing until you type `y` (default: 10 commits × 2 repeats, $15 cap). The answer is always to one question: **does the challenger solve as much, for less?**
@@ -95,7 +95,7 @@ That's the real result on the author's Legwork repo: no saving shown, far from t
 
 Every run writes a **record** (`~/.aimpg/verify/*.record.json`) holding versions, both setups, each run's tokens, $ and outcome, and the verdict, but never code, diffs or commit messages. Repo and commits are hashed unless you add `--public`. Anyone can recheck the math for free with `aimpg verify --check record.json`, and rerun a public record on their own machine with `aimpg verify --rerun record.json --repo <clone>`.
 
-Same model: the energy test decides (it must hold at every corner of the energy ranges). Different models or agents: cost per solved task decides, because model sizes are secret. A challenger that solves more than 10 points fewer tasks is never "supported". Codex runs are measured from its own logs; other commands are judged on solve rate and time only.
+Same model: the energy test decides (it must hold at every corner of the energy ranges). Different models or agents: cost per solved task decides, because model sizes are secret. A challenger that solves more than 10 points fewer tasks is never "supported". Codex runs are measured from its own logs and priced from OpenAI's published prices. Codex logs in with an OpenAI **API key** (a ChatGPT subscription login can't be used inside the sandbox); the key is written to the run's throwaway folder and deleted when the run ends. Other commands are judged on solve rate and time only.
 
 ### 5. Show the cost of each pull request
 ```bash

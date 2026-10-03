@@ -59,7 +59,7 @@ def summary(in_window, energies: list[TaskEnergy]) -> list[str]:
         "YOUR AI CODING",
         f"  Energy   {_fmt_wh(everything)}",
         f"           ≈ {equivalence.everyday(everything)}",
-        f"  Money    {_usd(usd)} API-equivalent (Anthropic's published prices"
+        f"  Money    {_usd(usd)} API-equivalent (Anthropic's and OpenAI's published prices"
         + (f"; {unknown} requests from unpriced models left out)" if unknown else ")"),
         f"  Output   {len(energies)} commits made with AI help",
     ]

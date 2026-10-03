@@ -127,6 +127,9 @@ def _agent_env(work: Path, cfg: Path, proxy: AllowlistProxy, api_key: str, key_e
         UV_OFFLINE="1",
         npm_config_offline="true",
     )
+    if Path("/etc/ssl/cert.pem").exists():
+        # Codex (rustls) can't reach the keychain's trust store inside the sandbox
+        env["SSL_CERT_FILE"] = "/etc/ssl/cert.pem"
     if api_key and key_env:
         env[key_env] = api_key
     return env
@@ -181,6 +184,30 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
     if solution is not None:  # fake agent tests only
         shutil.copy(solution, cfgdir / "solution.tar")
 
+    key = cfg.key_for(setup.key_env)
+    if setup.agent == "codex" and setup.program[:1] == ["codex"] and key:
+        try:
+            _codex_login(cfgdir, key)
+        except RuntimeError as exc:
+            return record("harness_error", note=str(exc))
+    try:
+        return _run_agent(commit, setup, layout, cfg, work, cfgdir, key, record)
+    finally:
+        (cfgdir / "auth.json").unlink(missing_ok=True)  # the run folder is kept for audits; the key is not
+
+
+def _codex_login(cfgdir: Path, key: str) -> None:
+    """Codex's documented API-key login, into the run's throwaway CODEX_HOME (never ~/.codex)."""
+    import subprocess
+
+    env = {"HOME": str(cfgdir), "CODEX_HOME": str(cfgdir), "PATH": sandbox.tool_path(("codex",))}
+    proc = subprocess.run(["codex", "login", "--with-api-key"], input=key, env=env, capture_output=True, text=True, timeout=60)
+    if proc.returncode != 0 or not (cfgdir / "auth.json").exists():
+        raise RuntimeError(f"codex login failed: {(proc.stderr or proc.stdout)[-200:]}")
+
+
+def _run_agent(commit: Commit, setup: Setup, layout: Layout, cfg: Config, work: Path, cfgdir: Path, key: str, record) -> Record:
+    run_id = cfgdir.parent.name
     with AllowlistProxy(setup.hosts) as proxy:
         profile = Profile(
             writable=[work, cfgdir],
@@ -193,7 +220,7 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
             setup.argv(task_text(commit, cfg.task_mode), cfg.model, cfg.per_run_budget_usd, cfgdir),
             profile=profile,
             profile_path=layout.profile_path(run_id),
-            env=_agent_env(work, cfgdir, proxy, cfg.key_for(setup.key_env), setup.key_env),
+            env=_agent_env(work, cfgdir, proxy, key, setup.key_env),
             cwd=work,
             timeout=cfg.timeout,
         )

@@ -106,6 +106,9 @@ class Profile:
             "(allow sysctl-read)",
             "(allow mach-lookup " + " ".join(f'(global-name "{m}")' for m in _MACH_SERVICES) + ")",
             "(allow iokit-open)",
+            # Codex syncs macOS managed preferences at startup and refuses to run
+            # without them; cfprefsd shares them read-only through this memory.
+            '(allow ipc-posix-shm-read* (ipc-posix-name-prefix "apple.cfprefs"))',
             "(allow signal (target same-sandbox))",
             f'(allow file-read* (require-not (subpath "{home}")))',
         ]
@@ -156,6 +159,7 @@ def run(argv: list[str], *, profile: Profile, profile_path: Path, env: dict[str,
         ["sandbox-exec", "-f", str(profile_path), *argv],
         cwd=cwd,
         env=env,
+        stdin=subprocess.DEVNULL,  # Codex waits for "additional input" on an open stdin
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

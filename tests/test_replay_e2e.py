@@ -264,3 +264,15 @@ def test_verify_record_from_real_runs_is_private_and_rechecks(prepared, tmp_path
     assert commit.sha not in text and commit.repo not in text and "sk-test" not in text
     assert record["verdict"]["challenger"]["solved"] == 1 and record["verdict"]["challenger"]["usd_per_solved"] is None
     assert check(record)[0]
+
+
+@pytest.mark.skipif(shutil.which("codex") is None, reason="codex not installed")
+def test_real_codex_reaches_openai_through_the_sandbox_and_key_file_is_deleted(prepared):
+    """Free: a fake key gets OpenAI's 401, which proves login, sandbox and proxy all work."""
+    from aimpg.replay.setups import codex
+
+    layout, commit, _, _ = prepared
+    rec = run_one(commit, codex(), 0, layout, cfg(keys={"OPENAI_API_KEY": "sk-not-a-real-key-000"}, timeout=180))
+    print(rec.outcome, rec.note)
+    assert rec.outcome == "account_error", (rec.outcome, rec.note)
+    assert not list(layout.root.rglob("auth.json"))  # the key never stays on disk

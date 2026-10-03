@@ -49,3 +49,13 @@ def test_thinking_tokens_count_as_output_and_1h_cache_writes_are_kept(write_log)
     row["message"]["usage"]["cache_creation"] = {"ephemeral_1h_input_tokens": 200, "ephemeral_5m_input_tokens": 100}
     u = parse_logs([write_log([row])]).requests[0].usage
     assert u.output == 228 and u.cache_write == 300 and u.cache_write_1h == 200
+
+
+def test_codex_models_are_priced_from_openais_table():
+    from aimpg.cost import usage_cost
+    from aimpg.model import Usage
+
+    # gpt-6-luna: $0.10 in, $0.01 cached, $0.50 out per 1M
+    assert usage_cost(Usage(fresh_in=1_000_000, cache_read=1_000_000, output=1_000_000), "gpt-6-luna") == pytest.approx(0.61)
+    assert usage_cost(Usage(output=1_000_000), "gpt-6.1-sol") == pytest.approx(10.0)
+    assert usage_cost(Usage(output=1), "gpt-unknown") is None

@@ -1,4 +1,4 @@
-"""API-equivalent dollar cost of requests, from Anthropic's published price table.
+"""API-equivalent dollar cost of requests, from Anthropic's and OpenAI's published price tables.
 
 Prices live in prices.json with their source URL. For subscription users the
 number is what the same work would cost on the pay-per-use API, not a bill.
