@@ -130,6 +130,7 @@ def test_missing_key_stops_before_spending(tmp_path, monkeypatch, capsys):
     from aimpg.replay import cli as replay_cli
 
     monkeypatch.setattr(replay_cli, "STATE", tmp_path / "state")
+    (tmp_path / ".git").mkdir()
     (replay_cli._state(tmp_path)).joinpath("selected.jsonl").write_text(
         "\n".join(json.dumps({"repo": str(tmp_path), "sha": f"{i:040x}", "parent": "p", "subject": "s", "body": "",
                               "test_files": [], "code_files": []}) for i in range(10)) + "\n")
