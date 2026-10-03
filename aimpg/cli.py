@@ -26,15 +26,24 @@ def _common(p: argparse.ArgumentParser, days: int) -> None:
     p.add_argument("--days", type=int, default=days, help=f"window size in days (default {days})")
     p.add_argument("--logs", type=Path, default=DEFAULT_ROOT, help="Claude Code projects dir")
     p.add_argument("--codex-logs", type=Path, default=None, help="Codex sessions dir (default ~/.codex/sessions)")
+    p.add_argument("--cursor-usage", type=Path, action="append", default=[], metavar="CSV",
+                   help="Cursor usage export (cursor.com/dashboard → Usage → Export CSV); repeatable")
+    p.add_argument("--cursor-repo", type=Path, default=None, help="repo the Cursor work was in (matches it to your commits by time)")
+    p.add_argument("--cursor-user", default=None, help="only this User's rows (team exports)")
     p.add_argument("--fetch", action="store_true", help="git fetch each repo first (uses the network)")
 
 
 def _analyze(args):
-    from aimpg import codex_logs
+    from aimpg import codex_logs, cursor_usage
 
     now = time.time()
     since = now - args.days * DAY
-    parsed = codex_logs.merge(parse_logs(iter_log_files(args.logs)), codex_logs.parse_codex(codex_logs.iter_files(args.codex_logs)))
+    cursor_repo = str(args.cursor_repo.expanduser().resolve()) if args.cursor_repo else ""
+    parsed = codex_logs.merge(
+        parse_logs(iter_log_files(args.logs)),
+        codex_logs.parse_codex(codex_logs.iter_files(args.codex_logs)),
+        cursor_usage.parse_cursor([p.expanduser() for p in args.cursor_usage], cursor_repo, args.cursor_user),
+    )
     return parsed, attribute(parsed, since, now, refresh=args.fetch), since, now
 
 
@@ -86,10 +95,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.days <= 0:
         parser.error("--days must be positive")
-    if not args.logs.is_dir():
+    from aimpg import codex_logs
+    from aimpg.cursor_usage import CursorExportError
+
+    if not (args.logs.is_dir() or args.cursor_usage or (args.codex_logs or codex_logs.DEFAULT_ROOT).is_dir()):
         print(f"No Claude Code logs found at {args.logs}. Nothing to report.")
         return 0
-    parsed, attribution, since, now = _analyze(args)
+    for path in args.cursor_usage:
+        if not path.expanduser().is_file():
+            print(f"Cursor export not found: {path}")
+            return 1
+    try:
+        parsed, attribution, since, now = _analyze(args)
+    except (CursorExportError, UnicodeDecodeError) as exc:
+        print(f"Can't read the Cursor export: {exc}")
+        return 1
 
     if args.command == "export":
         rows = share.csv_rows(attribution, subjects=not args.no_subjects, authors=not args.no_authors)

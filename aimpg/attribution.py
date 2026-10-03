@@ -39,6 +39,7 @@ from aimpg.model import CommitCall, ParseResult, Request, Task
 
 PAD = 2.0  # seconds; git timestamps are whole seconds
 GRACE = 2 * 3600.0
+TIME_ONLY = "cursor:"  # session prefix of sources matched by time alone
 BREAK = 2 * 3600.0  # a pause this long between requests starts a new work burst  # hand commits often land a while after the session goes quiet
 
 NOT_IN_REPO = "not in a git repo (or repo moved/deleted)"
@@ -149,6 +150,9 @@ def attribute(
     exact = set(tasks)
     emails: dict[str, str] = {}
     for session, rest in leftovers.items():
+        if session.startswith(TIME_ONLY):
+            _time_tier(session, rest, session_repos, commits_by_repo, exact, emails, task_for, result)
+            continue
         matches: list[tuple[str, Commit]] = []
         for repo in sorted(session_repos.get(session, set())):
             if repo not in emails:
@@ -167,6 +171,36 @@ def attribute(
 
     result.tasks = sorted(tasks.values(), key=lambda t: t.ts)
     return result
+
+
+def _time_tier(session, rest, session_repos, commits_by_repo, exact, emails, task_for, result) -> None:
+    """Sources with no file or commit evidence (Cursor's usage export): each
+    request goes to your next own commit in the repo, if one follows within 2h."""
+    repos = sorted(session_repos.get(session, set()))
+    if not repos:
+        result.unattributed.setdefault(NOT_IN_REPO, []).extend(rest)
+        return
+    repo = repos[0]
+    if repo not in emails:
+        emails[repo] = user_email(repo)
+    own = sorted(
+        (c for c in commits_by_repo.get(repo, {}).values()
+         if emails[repo] and c.author_email == emails[repo] and (repo, c.sha) not in exact
+         and rest[0].ts - PAD <= c.ts <= rest[-1].ts + GRACE),
+        key=lambda c: c.ts,
+    )
+    i = 0
+    for commit in own:
+        j = i
+        while j < len(rest) and rest[j].ts <= commit.ts + PAD:
+            j += 1
+        if j > i and commit.ts - rest[j - 1].ts <= GRACE:
+            _add_bursts(task_for(repo, commit, "time"), rest[i:j], 1.0)
+        elif j > i:
+            result.unattributed.setdefault(NO_COMMIT_YET, []).extend(rest[i:j])
+        i = j
+    if i < len(rest):
+        result.unattributed.setdefault(NO_COMMIT_YET, []).extend(rest[i:])
 
 
 def _add_bursts(task: Task, segment: list[Request], weight: float) -> None:

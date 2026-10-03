@@ -40,6 +40,13 @@ uv tool install aimpg && aimpg live install     # shows the change, asks y/N, ke
 ```
 After the agent commits, one line for you only (never sent to the model): *"that commit cost $2.40 over 31 AI requests. 92% of the context is from earlier work: /clear before the next task saves ~92% per request."* Undo with `aimpg live uninstall`.
 
+### Using Cursor?
+Cursor keeps its token counts online. Download them at **cursor.com/dashboard → Usage → Export CSV**, then:
+```bash
+aimpg report --cursor-usage ~/Downloads/usage-events.csv --cursor-repo ~/code/myproject
+```
+Team export? Add `--cursor-user "Your Name"` to count only your rows.
+
 ### 1. See your AI footprint in terms you can picture
 `aimpg report` reads the Claude Code (and Codex CLI) logs already on your machine and ties every AI request to the git commit it produced. Energy is shown as an honest range and translated into kettles, phone charges, EV kilometres and CO₂. Money is the API-equivalent cost at Anthropic's published prices (for subscribers, what the same work would cost on the API).
 
@@ -99,7 +106,7 @@ One row per AI-assisted commit: date, repo, energy range, CO₂ range and cost. 
 
 ## Limits (honest list)
 
-- Claude Code and Codex CLI logs. Cursor keeps token usage on its servers, not on your machine, so it isn't covered yet. Codex's model prices aren't in the table yet; its requests count toward energy but are listed as unpriced. Replays need macOS and an Anthropic API key (about $0.10–0.30 per run).
+- Claude Code and Codex CLI logs are read automatically. Cursor keeps token usage on its servers, so it needs its usage export (below), and that export doesn't say which folder the work was in: give `--cursor-repo` and requests are matched to your next own commit there by time alone (shown as "by time only"). Codex's model prices aren't in the table yet; its requests count toward energy but are listed as unpriced. Replays need macOS and an Anthropic API key (about $0.10–0.30 per run).
 - Energy is an estimate with a wide range; dollars are close (within about 7% of Claude Code's own session totals on the author's logs).
 - Tips are upper bounds and overlap; they can't be added together.
 - Replays from commit messages alone are hard (12% solved on the author's repo); `--task-mode tests` shows the agent the tests, which makes tasks easier than real work but keeps comparisons fair.

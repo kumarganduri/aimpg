@@ -158,10 +158,11 @@ def render(parsed: ParseResult, attribution: Attribution, since: float, now: flo
         return "\n".join(lines) + "\n"
 
     add(f"{'AI energy in window ':.<46} {_fmt_wh(everything)}  ({len(in_window):,} requests)")
-    tiers = {k: sum(1 for e in energies if e.task.attribution == k) for k in ("exact", "fuzzy", "grace")}
+    tiers = {k: sum(1 for e in energies if e.task.attribution == k) for k in ("exact", "fuzzy", "grace", "time")}
     add(
         f"  {'matched to commits ':.<44} {_fmt_wh(attributed)}  ({len(energies)} commits: "
-        f"{tiers['exact']} exact, {tiers['fuzzy']} fuzzy, {tiers['grace']} grace)"
+        f"{tiers['exact']} exact, {tiers['fuzzy']} fuzzy, {tiers['grace']} grace"
+        + (f", {tiers['time']} by time only" if tiers["time"] else "") + ")"
     )
     if lead_up.high > 0:
         add(f"    {'of which lead-up (before a 2h+ break) ':.<42} {_fmt_wh(lead_up)}")

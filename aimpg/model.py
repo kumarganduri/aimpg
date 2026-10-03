@@ -60,7 +60,7 @@ class Task:
     sha: str
     ts: float
     subject: str
-    attribution: str  # "exact" | "fuzzy" | "grace"
+    attribution: str  # "exact" | "fuzzy" | "grace" | "time" (Cursor export: time alone)
     status: str  # a gitkept.Status value
     requests: list[Request] = field(default_factory=list)
     # Share of each request's energy that belongs to this commit (parallel to
