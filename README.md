@@ -40,14 +40,16 @@ aimpg replay select ~/my-repo                      # free: finds commits your te
 aimpg replay models ~/my-repo --cap 15 --task-mode tests
 ```
 ```
-model        solved  $ / solved task  energy per solved task
-haiku          9/10            $0.04  0.2–2.1 Wh ≈ <1 full phone charges
-sonnet        10/10            $0.14  0.6–7.3 Wh ≈ <1 full phone charges
-opus          10/10            $0.31  1.4–15 Wh ≈ <1 full phone charges
+model         solved  $ / solved task  energy per solved task
+sonnet         10/10            $0.12  0.5–6.3 Wh ≈ <1 full phone charges
+opus           10/10            $0.33  2.0–21.9 Wh ≈ <1–1.3 full phone charges
+haiku           8/10            $0.38  3.3–28.0 Wh ≈ <1–1.6 full phone charges
 
-Use haiku: it solved 90% of tasks (best: 100%) at 7.8x lower cost per solved task than opus.
+Use sonnet: it solved 100% of tasks (best: 100%) at 3.1x lower cost per solved task than haiku.
 ```
-*(Illustrative.)* It re-does your real past commits with each model in a locked sandbox, and **your own tests decide** what counts as solved.
+*(Real result on the author's Legwork repo, 10 commits per model, $7.56 total.)* **The cheapest model per token was the most expensive per task:** Haiku needed about 38 requests and 2.5 minutes per task, where Sonnet needed 7 requests and 25 seconds. Sonnet was cheapest on 9 of the 10 commits.
+
+It re-does your real past commits with each model in a locked sandbox, and **your own tests decide** what counts as solved.
 
 ### 4. Check whether a "token saver" really saves anything
 ```bash
