@@ -277,7 +277,7 @@ def _finish_other(commit: Commit, setup: Setup, layout: Layout, work: Path, cfgd
         cost = sum(p for p in prices if p is not None) if cost_known else 0.0
         check = "unverified (codex rollout log)" if requests else "empty transcript"
     note = f"blocked: {blocked[:5]}" if blocked else ""
-    out = (res.stdout or "")[-2000:] + (res.stderr or "")[-2000:]
+    out = _codex_errors(res.stdout or "", res.stderr or "") if setup.agent == "codex" else ""
     if res.timed_out:
         return record("timeout", usages=usages, cost=cost, check=check, note=note, model=model, cost_known=cost_known)
     if setup.agent == "codex" and _OPENAI_ACCOUNT_ERROR.search(out):
@@ -295,6 +295,25 @@ def _finish_other(commit: Commit, setup: Setup, layout: Layout, work: Path, cfgd
                  note=note or ("" if passed else tail[-300:]), model=model, cost_known=cost_known)
     shutil.rmtree(work, ignore_errors=True)
     return rec
+
+
+def _codex_errors(stdout: str, stderr: str) -> str:
+    """Only Codex's own error events, never the code or command output it prints.
+
+    Found in the first real Codex run: the task was about handling OpenAI's
+    "insufficient_quota" error, so the code Codex wrote contained the phrase,
+    and scanning all of stdout stopped the batch with a false account error.
+    """
+    lines = []
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") in ("error", "turn.failed"):
+            lines.append(json.dumps(event.get("message") or event.get("error")))
+    lines += [l for l in stderr.splitlines() if " ERROR " in l or l.startswith("Error")]
+    return "\n".join(lines)
 
 
 @dataclass

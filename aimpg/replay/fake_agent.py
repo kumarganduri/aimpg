@@ -100,6 +100,8 @@ def other_agent(mode: str, args: list[str]) -> int:
             return 1
         model = args[args.index("-m") + 1] if "-m" in args else "gpt-fake"
         codex_rollout(cfg, cwd, model, 3)
+        # its output can quote error text from the code it writes: never an account error
+        print(json.dumps({"type": "item.completed", "item": {"type": "file_change", "diff": "+ # insufficient_quota: 401 Unauthorized"}}))
         print('{"type":"turn.completed"}')
     if mode == "crash":
         return 1
