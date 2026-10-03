@@ -107,3 +107,14 @@ def test_cli_cursor_only(tmp_path, capsys):
 def test_cli_missing_export(tmp_path, capsys):
     assert main(["report", "--cursor-usage", str(tmp_path / "nope.csv")]) == 1
     assert "not found" in capsys.readouterr().out
+
+
+def test_export_with_cloud_agent_columns_and_no_dollar_costs(tmp_path):
+    # Layout of a real personal export (2026-10): no User column, two ID columns,
+    # Cost is "Included"/"Free" rather than dollars.
+    header = ["Date", "Cloud Agent ID", "Automation ID", "Kind", "Model", "Max Mode", "Input (w/ Cache Write)",
+              "Input (w/o Cache Write)", "Cache Read", "Output Tokens", "Total Tokens", "Cost"]
+    r = row(1_000_000, model="grok-bot-cua") | {"Cost": "Included", "Cloud Agent ID": "", "Automation ID": ""}
+    (req,) = parse_cursor([export(tmp_path / "u.csv", [r], header)]).requests
+    assert req.model == "grok-bot-cua" and req.usage.output == 11329
+    assert usage_cost(req.usage, req.model) is None  # counted as unpriced, never guessed
