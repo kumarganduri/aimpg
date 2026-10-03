@@ -54,6 +54,18 @@ def candidates(repo: str, since: float, cutoff: float) -> tuple[list[Commit], di
     return out, skipped
 
 
+def commit_at(repo: str, sha: str) -> Commit:
+    """One named commit, without the authorship/cutoff filters (rerunning someone's public record)."""
+    files = workspace.git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", sha).decode().split()
+    parents = workspace.git(repo, "rev-list", "--parents", "-n", "1", sha).decode().split()[1:]
+    if len(parents) != 1:
+        raise WorkspaceError(f"{sha[:10]} is a merge or root commit")
+    subject, body = _message(repo, sha)
+    ts = float(workspace.git(repo, "log", "-1", "--format=%ct", sha).decode().strip())
+    tests = sorted(f for f in files if TEST_FILE.search(f))
+    return Commit(repo, sha, parents[0], subject, body, tests, sorted(set(files) - set(tests)), ts=ts)
+
+
 def _message(repo: str, sha: str) -> tuple[str, str]:
     text = workspace.git(repo, "log", "-1", "--format=%B", sha).decode(errors="replace").strip()
     subject, _, body = text.partition("\n")

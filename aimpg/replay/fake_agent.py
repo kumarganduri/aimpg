@@ -76,9 +76,44 @@ def escape_attempts(cwd: Path, cfg: Path) -> list[str]:
     return succeeded
 
 
+def codex_rollout(home: Path, cwd: Path, model: str, n: int) -> None:
+    """Codex's rollout log shape: session_meta, turn_context, token_count events."""
+    folder = home / "sessions" / time.strftime("%Y/%m/%d")
+    folder.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+    rows = [{"timestamp": ts + ".000Z", "type": "session_meta", "payload": {"id": str(uuid.uuid4()), "cwd": str(cwd), "cli_version": "fake"}},
+            {"timestamp": ts + ".001Z", "type": "turn_context", "payload": {"model": model, "cwd": str(cwd)}}]
+    for i in range(n):
+        usage = {"input_tokens": 12000 * (i + 1), "cached_input_tokens": 9000 * i, "output_tokens": 300, "reasoning_output_tokens": 100}
+        rows.append({"timestamp": ts + f".{i + 2:03d}Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"last_token_usage": usage}}})
+    (folder / f"rollout-{uuid.uuid4()}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def other_agent(mode: str, args: list[str]) -> int:
+    """Stand-ins for `codex exec` (codex-<mode>) and any command (plain mode + task)."""
+    cfg = Path(os.environ["CODEX_HOME"])
+    cwd = Path.cwd()
+    if mode.startswith("codex-"):
+        mode = mode[len("codex-"):]
+        if mode == "nocredit":
+            print('{"type":"error","message":"You exceeded your current quota (insufficient_quota)"}')
+            return 1
+        model = args[args.index("-m") + 1] if "-m" in args else "gpt-fake"
+        codex_rollout(cfg, cwd, model, 3)
+        print('{"type":"turn.completed"}')
+    if mode == "crash":
+        return 1
+    if mode == "solve":
+        with tarfile.open(cfg / "solution.tar") as tar:
+            tar.extractall(cwd)
+    return 0
+
+
 def main() -> int:
     mode = sys.argv[1]
     args = sys.argv[2:]
+    if mode.startswith("codex-") or "--output-format" not in args:
+        return other_agent(mode, args)
     model = args[args.index("--model") + 1] if "--model" in args else "claude-sonnet-fake"
     cfg = Path(os.environ["CLAUDE_CONFIG_DIR"])
     cwd = Path.cwd()

@@ -8,7 +8,7 @@ host the agent wants to reach.
 The allowlist changes per phase:
 
     Phase A (prepare)   pypi.org, files.pythonhosted.org / registry.npmjs.org
-    Phase B (agent)     api.anthropic.com
+    Phase B (agent)     the agent's API only (api.anthropic.com, api.openai.com, ...)
     Phase C (judge)     nothing
 """
 
@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 PYPI = frozenset({"pypi.org", "files.pythonhosted.org"})
 NPM = frozenset({"registry.npmjs.org"})
 ANTHROPIC = frozenset({"api.anthropic.com"})
+OPENAI = frozenset({"api.openai.com"})
 NOTHING: frozenset[str] = frozenset()
 
 

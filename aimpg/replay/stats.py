@@ -80,6 +80,9 @@ def compare(runs: list[Run], baseline: str, challenger: str, *, seed: int = 0) -
     for c in shared:
         b, ch = _mean_vec(base[c]), _mean_vec(chal[c])
         effects.append([(y - x) / x for x, y in zip(b, ch)])
+    # Bootstrap in an order that doesn't depend on commit ids, so a record whose
+    # ids are hashed recomputes to exactly the same interval (`verify --check`).
+    effects.sort()
     n_corners = len(effects[0])
 
     rng = random.Random(seed)

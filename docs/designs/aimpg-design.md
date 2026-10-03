@@ -390,3 +390,34 @@ Critical gaps (no test, no handling, and silent): **0**.
 - **VERDICT:** ENG CLEARED for Phase 2 v1 (macOS, Python + JS/TS, 3 setups). Build P2-T1…T6, then the paid calibration (P2-T7) with Kumar's confirmation.
 
 NO UNRESOLVED DECISIONS
+
+## Phase 2b: `aimpg verify` (decided 2026-10-03)
+
+One command that checks an efficiency claim on your own commits and writes a
+record anyone can check.
+
+```
+aimpg verify --repo . --challenger rtk [--claim "rtk saves tokens"] [--commits 10 --repeats 2 --cap 15]
+aimpg verify --check verify-record.json        # free: recompute the verdict from the record
+aimpg verify --rerun verify-record.json        # paid: rerun a --public record's commits on your machine
+```
+
+Flow: `select` (free, reused if done) → plan + worst-case $ → y/N → runs (existing
+Batch, sandbox, proxy) → verdict → `verify-record.json` in ~/.aimpg/verify/.
+
+**Challengers (all kinds, decision V1):**
+- built-ins: `rtk`, `terse`, `haiku`/`sonnet`/`opus` (any model id);
+- custom Claude Code variants: `--append-prompt TEXT`, `--claude-md FILE`, `--settings FILE` (hooks), `--model`;
+- other agent CLIs through adapters. An adapter knows argv, the hosts it may reach, the env var for its key, and where its tokens are:
+  - `claude`: JSON result + transcript, checked against modelUsage;
+  - `codex`: `codex exec --json`, CODEX_HOME=run config dir, OPENAI_API_KEY, api.openai.com, tokens from its rollout logs;
+  - `cmd:"... {task} ..."` with `--hosts` and `--key-env`: no token source, so pass rate and time only, with energy and $ shown as "not measurable".
+
+**Verdict:** the question is always "does the challenger solve as much, for less?"
+- Same model: the existing paired energy test (shared passes, 97.5%, every corner), plus $ per solved task and pass rates.
+- Different model or agent: energy can't be ranked (secret sizes), so it's picker-style: $ per solved task (when priced) and solve rate, with energy as ranges.
+- Too few shared passes gives "not proven". It never reads as a win.
+
+**Record (decision V2, private by default):** schema version; aimpg, Claude Code/agent, factors and prices versions; claim; both setups (custom prompt and CLAUDE.md text included; settings.json and command as SHA-256 unless `--public`); task mode; each run's outcome, tokens, $ and time; verdict. The repo and commits are salted hashes unless `--public` (remote URL + shas, so `--rerun` works). No code, diffs or commit messages, ever.
+
+**Size (decision V3):** 10 commits × 2 repeats by default, with a hard $ cap you confirm; `--resume` as in replay.

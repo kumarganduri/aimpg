@@ -26,9 +26,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from aimpg import codex_logs
+from aimpg.cost import usage_cost
 from aimpg.logs import iter_log_files, parse_logs
 from aimpg.replay import sandbox, workspace
-from aimpg.replay.proxy import ANTHROPIC, AllowlistProxy
+from aimpg.replay.proxy import AllowlistProxy
 from aimpg.replay.sandbox import Profile
 from aimpg.replay.setups import Setup, parse_result
 from aimpg.replay.workspace import Commit, Layout, WorkspaceError
@@ -39,6 +41,8 @@ NOT_PASSED = ("tests_failed", "timeout", "budget_hit", "agent_error")
 # Found in the first tests-mode run: after the prepaid credit ran out, 47 runs
 # "failed" in 2s with "Credit balance is too low" and were counted against the agent.
 _ACCOUNT_ERROR = re.compile(r"credit balance|invalid x-api-key|authentication_error|permission_error|billing", re.I)
+# The same for OpenAI (Codex): no quota, bad key.
+_OPENAI_ACCOUNT_ERROR = re.compile(r"insufficient_quota|invalid_api_key|incorrect api key|401 unauthorized|exceeded your current quota", re.I)
 
 
 @dataclass
@@ -50,6 +54,12 @@ class Config:
     parallel: int = 3
     timeout: float = AGENT_TIMEOUT
     task_mode: str = "hint"  # "hint": message + interface hint, tests hidden | "tests": tests shown
+    keys: dict[str, str] = field(default_factory=dict)  # other agents' keys by env var (from the user's shell)
+
+    def key_for(self, env_name: str) -> str:
+        if not env_name:
+            return ""
+        return self.keys.get(env_name) or (self.api_key if env_name == "ANTHROPIC_API_KEY" else "")
 
 
 def task_text(commit: Commit, mode: str) -> str:
@@ -79,6 +89,8 @@ class Record:
     usages: list[list[int]] = field(default_factory=list)  # [fresh_in, cache_write, cache_read, output] per request
     tokens_check: str = ""  # "ok" | "unverified" | reason for harness_error
     note: str = ""
+    cost_known: bool = True  # False: unpriced model, or an agent whose tokens aimpg can't see
+    agent: str = "claude"
 
 
 class BudgetExhausted(RuntimeError):
@@ -102,11 +114,12 @@ def preflight_key(api_key: str) -> None:
         raise RuntimeError(f"API key rejected by Anthropic (HTTP {exc.code}). Check ANTHROPIC_API_KEY.") from None
 
 
-def _agent_env(work: Path, cfg: Path, proxy: AllowlistProxy, api_key: str) -> dict[str, str]:
+def _agent_env(work: Path, cfg: Path, proxy: AllowlistProxy, api_key: str, key_env: str = "ANTHROPIC_API_KEY") -> dict[str, str]:
     env = workspace._tool_env(work)
     env.update(
         HOME=str(cfg),
         CLAUDE_CONFIG_DIR=str(cfg),
+        CODEX_HOME=str(cfg),
         HTTPS_PROXY=proxy.url,
         https_proxy=proxy.url,
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1",
@@ -114,8 +127,8 @@ def _agent_env(work: Path, cfg: Path, proxy: AllowlistProxy, api_key: str) -> di
         UV_OFFLINE="1",
         npm_config_offline="true",
     )
-    if api_key:
-        env["ANTHROPIC_API_KEY"] = api_key
+    if api_key and key_env:
+        env[key_env] = api_key
     return env
 
 
@@ -147,8 +160,10 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
     run_id = f"{commit.sha[:10]}-{setup.name}-r{repeat}-a{attempt}"
     started = time.time()
 
-    def record(outcome: str, *, usages=(), cost=0.0, check="", note="") -> Record:
-        return Record(run_id, commit.repo, commit.sha, setup.name, repeat, outcome, outcome == "passed", setup.model or cfg.model, cost, round(time.time() - started, 1), [list(u) for u in usages], check, note[:500])
+    def record(outcome: str, *, usages=(), cost=0.0, check="", note="", model=None, cost_known=True) -> Record:
+        return Record(run_id, commit.repo, commit.sha, setup.name, repeat, outcome, outcome == "passed",
+                      model or setup.model or cfg.model, cost, round(time.time() - started, 1), [list(u) for u in usages],
+                      check, note[:500], cost_known, setup.agent)
 
     try:
         work = workspace.clone_for_run(commit, layout, layout.prepared(commit.sha), run_id)
@@ -166,10 +181,10 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
     if solution is not None:  # fake agent tests only
         shutil.copy(solution, cfgdir / "solution.tar")
 
-    with AllowlistProxy(ANTHROPIC) as proxy:
+    with AllowlistProxy(setup.hosts) as proxy:
         profile = Profile(
             writable=[work, cfgdir],
-            readable=sandbox.tool_dirs() + ([workspace.UV_PYTHON] if workspace.UV_PYTHON.is_dir() else []),
+            readable=sandbox.tool_dirs(sandbox.TOOLS + tuple(setup.requires)) + ([workspace.UV_PYTHON] if workspace.UV_PYTHON.is_dir() else []),
             # the source repo too: it holds the answer, and may live outside $HOME
             deny_roots=[layout.root, Path(commit.repo)],
             proxy_port=proxy.port,
@@ -178,11 +193,14 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
             setup.argv(task_text(commit, cfg.task_mode), cfg.model, cfg.per_run_budget_usd, cfgdir),
             profile=profile,
             profile_path=layout.profile_path(run_id),
-            env=_agent_env(work, cfgdir, proxy, cfg.api_key),
+            env=_agent_env(work, cfgdir, proxy, cfg.key_for(setup.key_env), setup.key_env),
             cwd=work,
             timeout=cfg.timeout,
         )
         blocked = proxy.blocked()
+
+    if setup.agent != "claude":
+        return _finish_other(commit, setup, layout, work, cfgdir, res, blocked, record)
 
     result = parse_result(res.stdout)
     (cfgdir / "result.json").write_text(json.dumps(result, indent=1))  # audit trail (no key in it)
@@ -220,6 +238,38 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
     return rec
 
 
+def _finish_other(commit: Commit, setup: Setup, layout: Layout, work: Path, cfgdir: Path, res, blocked, record) -> Record:
+    """Codex (tokens from its rollout logs, priced only if the model is in our table) or any command (no tokens)."""
+    usages, model, cost, cost_known, check = [], None, 0.0, False, "not measurable (no token source)"
+    if setup.agent == "codex":
+        requests = codex_logs.parse_codex(codex_logs.iter_files(cfgdir / "sessions")).requests
+        usages = [(r.usage.fresh_in, r.usage.cache_write, r.usage.cache_read, r.usage.output) for r in requests]
+        model = requests[0].model if requests else None
+        prices = [usage_cost(r.usage, r.model) for r in requests]
+        cost_known = bool(requests) and all(p is not None for p in prices)
+        cost = sum(p for p in prices if p is not None) if cost_known else 0.0
+        check = "unverified (codex rollout log)" if requests else "empty transcript"
+    note = f"blocked: {blocked[:5]}" if blocked else ""
+    out = (res.stdout or "")[-2000:] + (res.stderr or "")[-2000:]
+    if res.timed_out:
+        return record("timeout", usages=usages, cost=cost, check=check, note=note, model=model, cost_known=cost_known)
+    if setup.agent == "codex" and _OPENAI_ACCOUNT_ERROR.search(out):
+        line = next(l for l in out.splitlines() if _OPENAI_ACCOUNT_ERROR.search(l))
+        return record("account_error", usages=usages, cost=cost, check=check, note=line[:300], model=model, cost_known=cost_known)
+    if res.returncode != 0:
+        if setup.agent == "codex" and not usages:
+            return record("harness_error", note=f"agent produced nothing: {(res.stderr or '')[-300:]}", model=model)
+        return record("agent_error", usages=usages, cost=cost, check=check, note=(note + " " + (res.stderr or ""))[-500:], model=model, cost_known=cost_known)
+    if setup.agent == "codex" and not usages:
+        return record("harness_error", check=check, note="codex wrote no rollout log", model=model)
+    workspace.overlay_commit_tests(commit, work)
+    passed, tail = workspace.judge(commit, layout, work, Path(cfgdir).parent.name + "-judge")
+    rec = record("passed" if passed else "tests_failed", usages=usages, cost=cost, check=check,
+                 note=note or ("" if passed else tail[-300:]), model=model, cost_known=cost_known)
+    shutil.rmtree(work, ignore_errors=True)
+    return rec
+
+
 @dataclass
 class Batch:
     commits: list[Commit]
@@ -245,7 +295,7 @@ class Batch:
                 probe.mkdir(parents=True)
                 s.configure(probe)
                 shutil.rmtree(probe, ignore_errors=True)
-        if self.cfg.api_key:
+        if self.cfg.api_key and any(s.agent == "claude" for s in self.setups):
             preflight_key(self.cfg.api_key)
         with AllowlistProxy() as proxy:  # Phase A, one commit at a time
             for c in self.commits:

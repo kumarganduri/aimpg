@@ -20,6 +20,7 @@ from aimpg.gitkept import DAY
 from aimpg.logs import DEFAULT_ROOT, iter_log_files, parse_logs
 from aimpg.receipt import render
 from aimpg.replay import cli as replay_cli
+from aimpg.replay import verify as verify_mod
 
 
 def _common(p: argparse.ArgumentParser, days: int) -> None:
@@ -71,9 +72,12 @@ def main(argv: list[str] | None = None) -> int:
     hook.add_argument("event", choices=("post-commit",))
 
     replay_cli.add_parser(sub)
+    verify_mod.add_parser(sub)
     args = parser.parse_args(argv)
     if args.command == "replay":
         return replay_cli.main(args)
+    if args.command == "verify":
+        return verify_mod.main(args)
     if args.command in ("statusline", "hook", "live"):
         from aimpg import live as live_mod
 

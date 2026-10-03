@@ -87,6 +87,10 @@ def write_log(tmp_path: Path):
 def _never_read_the_real_agent_logs(tmp_path_factory, monkeypatch):
     """Tests must not depend on (or read) the developer's real ~/.codex or ~/.aimpg."""
     from aimpg import codex_logs, ledger
+    from aimpg.replay import cli as replay_cli
+    from aimpg.replay import verify
 
     monkeypatch.setattr(codex_logs, "DEFAULT_ROOT", tmp_path_factory.mktemp("no-codex") / "sessions")
     monkeypatch.setattr(ledger, "LEDGER", tmp_path_factory.mktemp("ledger") / "ledger.json")
+    monkeypatch.setattr(replay_cli, "STATE", tmp_path_factory.mktemp("replay-state"))
+    monkeypatch.setattr(verify, "STATE", tmp_path_factory.mktemp("verify-state"))

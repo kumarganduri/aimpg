@@ -40,7 +40,7 @@ _MACH_SERVICES = (
     "com.apple.cfprefsd.daemon",
     "com.apple.cfprefsd.agent",
 )
-TOOLS = ("claude", "uv", "node", "npm", "npx", "git", "rtk")
+TOOLS = ("claude", "codex", "uv", "node", "npm", "npx", "git", "rtk")
 
 
 class SandboxUnavailable(RuntimeError):

@@ -222,3 +222,45 @@ def test_parallel_runs_wait_for_reservations_instead_of_skipping(prepared, tmp_p
     batch = Batch([commit], [fake("nothing")], repeats=6, layout=layout, cfg=Config("m", 0.5, 1.2, parallel=3), results=tmp_path / "w.jsonl")
     assert len(batch.run()) == 6
     assert batch.spent < 0.1
+
+
+def test_codex_agent_tokens_from_rollout_log_and_openai_only(prepared):
+    layout, commit, _, solution = prepared
+    rec = run_one(commit, fake("solve", agent="codex"), 0, layout, cfg(keys={"OPENAI_API_KEY": "sk-test"}), solution=solution)
+    assert rec.outcome == "passed", rec.note
+    assert rec.agent == "codex" and rec.model == "gpt-fake"
+    assert rec.usages[0] == [12000, 0, 0, 400] and len(rec.usages) == 3
+    assert rec.cost_known is False and rec.cost_usd == 0  # GPT prices aren't in the table: never guessed
+    assert rec.tokens_check.startswith("unverified")
+
+
+def test_codex_no_quota_is_an_account_error(prepared):
+    layout, commit, _, _ = prepared
+    rec = run_one(commit, fake("nocredit", agent="codex"), 0, layout, cfg())
+    assert rec.outcome == "account_error" and "insufficient_quota" in rec.note
+
+
+def test_any_command_is_judged_by_tests_without_tokens(prepared):
+    layout, commit, _, solution = prepared
+    solved = run_one(commit, fake("solve", agent="cmd"), 0, layout, cfg(), solution=solution)
+    assert solved.outcome == "passed" and solved.usages == [] and solved.cost_known is False
+    assert solved.tokens_check.startswith("not measurable")
+    assert run_one(commit, fake("nothing", agent="cmd"), 0, layout, cfg()).outcome == "tests_failed"
+    assert run_one(commit, fake("crash", agent="cmd"), 0, layout, cfg()).outcome == "agent_error"
+
+
+def test_verify_record_from_real_runs_is_private_and_rechecks(prepared, tmp_path):
+    from aimpg.replay.verify import build_record, check
+
+    layout, commit, _, solution = prepared
+    plain, other = fake("solve"), fake("solve", agent="codex")
+    results = tmp_path / "v.jsonl"
+    Batch([commit], [plain, other], repeats=1, layout=layout, cfg=cfg(keys={"OPENAI_API_KEY": "sk-test"}),
+          results=results, solutions={commit.sha: solution}).run()
+    records, _ = load_results(results)
+    record = build_record(records, claim="codex is cheaper", baseline=plain, challenger=other, repo=str(commit.repo),
+                          task_mode="hint", public=False)
+    text = json.dumps(record)
+    assert commit.sha not in text and commit.repo not in text and "sk-test" not in text
+    assert record["verdict"]["challenger"]["solved"] == 1 and record["verdict"]["challenger"]["usd_per_solved"] is None
+    assert check(record)[0]

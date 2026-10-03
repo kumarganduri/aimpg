@@ -70,11 +70,32 @@ Use sonnet: it solved 100% of tasks (best: 100%) at 3.1x lower cost per solved t
 
 It re-does your real past commits with each model in a locked sandbox, and **your own tests decide** what counts as solved.
 
-### 4. Check whether a "token saver" really saves anything
+### 4. Verify any efficiency claim on your own code
+Token savers, prompts, hooks, CLAUDE.md files, models, even other agents: one command reruns your real commits both ways in a locked sandbox, and your own tests judge them.
 ```bash
-aimpg replay run ~/my-repo --setups claude-code,claude-code+rtk --commits 20 --cap 25 --task-mode tests
+aimpg verify --challenger rtk --claim "rtk saves tokens"          # a token saver
+aimpg verify --append-prompt "Be terse."                          # your own prompt (or --claude-md / --settings)
+aimpg verify --challenger haiku                                   # a cheaper model
+aimpg verify --challenger codex                                   # another agent (needs OPENAI_API_KEY)
+aimpg verify --challenger "cmd:aider --yes --message {task}" --hosts api.openai.com --key-env OPENAI_API_KEY
 ```
-On the author's Legwork repo (20 commits, 80 runs), RTK **did not** save energy: about 10% more on average (range −9% to +36%), and it solved 80% of tasks vs 90% without it. That's far from the advertised 60–90%. Your repo may differ, and now you can check.
+It shows the plan and the worst-case cost, and spends nothing until you type `y` (default: 10 commits × 2 repeats, $15 cap). The answer is always to one question: **does the challenger solve as much, for less?**
+```
+CLAIM: rtk saves tokens
+VERDICT: NOT PROVEN
+  · energy difference not proven
+
+  setup                     solved      $ per solved   energy per solved task
+  claude-code                36/40             $0.17   0.9–11.8 Wh
+  claude-code+rtk            32/40             $0.21   1.1–14.2 Wh
+
+  Energy, same tasks: +10% (interval -11%…+35%, 17 shared solved commits)
+```
+That's the real result on the author's Legwork repo: no saving shown, far from the advertised 60–90%. Your repo may differ, and now you can check.
+
+Every run writes a **record** (`~/.aimpg/verify/*.record.json`) holding versions, both setups, each run's tokens, $ and outcome, and the verdict, but never code, diffs or commit messages. Repo and commits are hashed unless you add `--public`. Anyone can recheck the math for free with `aimpg verify --check record.json`, and rerun a public record on their own machine with `aimpg verify --rerun record.json --repo <clone>`.
+
+Same model: the energy test decides (it must hold at every corner of the energy ranges). Different models or agents: cost per solved task decides, because model sizes are secret. A challenger that solves more than 10 points fewer tasks is never "supported". Codex runs are measured from its own logs; other commands are judged on solve rate and time only.
 
 ### 5. Show the cost of each pull request
 ```bash
