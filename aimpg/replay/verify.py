@@ -346,7 +346,9 @@ def _run(args) -> int:
     from aimpg.replay.proxy import AllowlistProxy
     from aimpg.replay.workspace import Layout, WorkspaceError
 
-    repo = args.repo.resolve()
+    repo = args.repo.expanduser().resolve()
+    if not (repo / ".git").exists():
+        raise VerifyError(f"{repo} is not a git repo (or doesn't exist). Pass --repo with your project's folder.")
     prior = None
     if args.rerun:
         prior = json.loads(args.rerun.read_text())

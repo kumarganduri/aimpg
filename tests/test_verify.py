@@ -144,3 +144,8 @@ def test_verdict_does_not_depend_on_commit_ids():
         rec(f"c{i}", "claude-code+rtk", usages=varied[i]) for i in range(8)]
     renamed = [Record(**{**r.__dict__, "commit": "z" + str(7 - int(r.commit[1:]))}) for r in records]
     assert verdict(records, "claude-code", "claude-code+rtk") == verdict(renamed, "claude-code", "claude-code+rtk")
+
+
+def test_missing_repo_is_a_plain_message(tmp_path, capsys):
+    assert main(["verify", "--repo", str(tmp_path / "nope"), "--challenger", "terse"]) == 1
+    assert "not a git repo" in capsys.readouterr().out
