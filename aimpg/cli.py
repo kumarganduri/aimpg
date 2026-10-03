@@ -25,13 +25,16 @@ from aimpg.replay import cli as replay_cli
 def _common(p: argparse.ArgumentParser, days: int) -> None:
     p.add_argument("--days", type=int, default=days, help=f"window size in days (default {days})")
     p.add_argument("--logs", type=Path, default=DEFAULT_ROOT, help="Claude Code projects dir")
+    p.add_argument("--codex-logs", type=Path, default=None, help="Codex sessions dir (default ~/.codex/sessions)")
     p.add_argument("--fetch", action="store_true", help="git fetch each repo first (uses the network)")
 
 
 def _analyze(args):
+    from aimpg import codex_logs
+
     now = time.time()
     since = now - args.days * DAY
-    parsed = parse_logs(iter_log_files(args.logs))
+    parsed = codex_logs.merge(parse_logs(iter_log_files(args.logs)), codex_logs.parse_codex(codex_logs.iter_files(args.codex_logs)))
     return parsed, attribute(parsed, since, now, refresh=args.fetch), since, now
 
 

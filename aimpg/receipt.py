@@ -146,7 +146,7 @@ def render(parsed: ParseResult, attribution: Attribution, since: float, now: flo
     skipped = parsed.stats.get("skipped_requests", 0) + parsed.stats.get("corrupt_rows", 0)
     add(
         f"Read {parsed.stats.get('unique_requests', 0):,} AI requests from {parsed.stats.get('files', 0)} log files "
-        f"(coverage {parsed.coverage:.1%}, {skipped} rows skipped, {len(parsed.versions)} Claude Code versions)."
+        f"(coverage {parsed.coverage:.1%}, {skipped} rows skipped, {len(parsed.versions)} agent versions)."
     )
     assumed = sorted({r.model for r in in_window if model_class(r.model)[1]})
     if assumed:

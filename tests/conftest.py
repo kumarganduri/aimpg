@@ -81,3 +81,12 @@ def write_log(tmp_path: Path):
         return path
 
     return _write
+
+
+@pytest.fixture(autouse=True)
+def _never_read_the_real_agent_logs(tmp_path_factory, monkeypatch):
+    """Tests must not depend on (or read) the developer's real ~/.codex or ~/.aimpg."""
+    from aimpg import codex_logs, ledger
+
+    monkeypatch.setattr(codex_logs, "DEFAULT_ROOT", tmp_path_factory.mktemp("no-codex") / "sessions")
+    monkeypatch.setattr(ledger, "LEDGER", tmp_path_factory.mktemp("ledger") / "ledger.json")

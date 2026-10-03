@@ -203,8 +203,10 @@ def compute_baseline() -> dict:
     from aimpg.logs import iter_log_files, parse_logs
     from aimpg.receipt import KEPT, task_energy
 
+    from aimpg import codex_logs
+
     now = time.time()
-    parsed = parse_logs(iter_log_files())
+    parsed = codex_logs.merge(parse_logs(iter_log_files()), codex_logs.parse_codex(codex_logs.iter_files()))
     attribution = attribute(parsed, now - 30 * 86400, now)
     all_energies = task_energy(attribution.tasks)
     from aimpg import ledger
