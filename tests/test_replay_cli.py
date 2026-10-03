@@ -109,3 +109,46 @@ def test_paid_run_combines_several_repos(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "5 commits × 2 setups × 2 repeats = 20 agent runs" in out
     assert "total cap $9.00" in out
+
+
+def test_resume_keeps_real_runs_and_redoes_dead_ones(tmp_path):
+    from aimpg.replay.run import completed, load_results
+
+    rows = [
+        record("c1", "claude-code", 0, True, 1.0),
+        record("c1", "claude-code+rtk", 0, True, 0.9),
+        {**record("c2", "claude-code", 0, False, 1.0), "outcome": "agent_error", "usages": [], "cost_usd": 0.0},  # never reached the model
+        {**record("c2", "claude-code+rtk", 0, False, 1.0), "outcome": "account_error", "usages": [], "cost_usd": 0.0},
+        {**record("c3", "claude-code", 0, False, 1.0), "outcome": "agent_error"},  # a real agent failure: kept
+    ]
+    path = tmp_path / "r.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    assert completed(path) == {("c1", "claude-code", 0), ("c1", "claude-code+rtk", 0), ("c3", "claude-code", 0)}
+    loaded, _ = load_results(path)
+    assert sorted((r.commit, r.setup) for r in loaded) == [("c1", "claude-code"), ("c1", "claude-code+rtk"), ("c3", "claude-code")]
+
+    # a resumed run appends a fresh record for c2; the latest record wins
+    with open(path, "a") as fh:
+        fh.write(json.dumps(record("c2", "claude-code", 0, True, 1.1)) + "\n")
+    loaded, _ = load_results(path)
+    assert ("c2", "claude-code") in {(r.commit, r.setup) for r in loaded}
+
+
+def test_resume_plan_counts_only_missing_runs(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(replay_cli, "STATE", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-not-used")
+    import random
+
+    from aimpg.replay import select
+    from aimpg.replay.workspace import Commit
+
+    (tmp_path / "repo").mkdir()
+    commits = [Commit("/r", f"{i:040d}", "p", "s", "", ["t.py"], ["a.py"]) for i in range(3)]
+    select.save(commits, tmp_path / "repo" / "selected.jsonl")
+    chosen = random.Random(7).sample(commits, 2)
+    prior = tmp_path / "prior.jsonl"
+    prior.write_text(json.dumps(record(chosen[0].sha, "claude-code", 0, True, 1.0)) + "\n")
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    main(["replay", "run", str(tmp_path / "repo"), "--commits", "2", "--cap", "9", "--setups", "claude-code,claude-code+rtk", "--resume", str(prior)])
+    out = capsys.readouterr().out
+    assert "1 runs already done, 7 to go" in out

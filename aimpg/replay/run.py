@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tarfile
 import threading
@@ -35,6 +36,9 @@ from aimpg.replay.workspace import Commit, Layout, WorkspaceError
 AGENT_TIMEOUT = 30 * 60
 TOKEN_TOLERANCE = 0.02
 NOT_PASSED = ("tests_failed", "timeout", "budget_hit", "agent_error")
+# Found in the first tests-mode run: after the prepaid credit ran out, 47 runs
+# "failed" in 2s with "Credit balance is too low" and were counted against the agent.
+_ACCOUNT_ERROR = re.compile(r"credit balance|invalid x-api-key|authentication_error|permission_error|billing", re.I)
 
 
 @dataclass
@@ -197,6 +201,11 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
     subtype = str(result.get("subtype", ""))
     if "budget" in subtype:
         return record("budget_hit", usages=usages, cost=cost, check=check, note=note)
+    message = str(result.get("result") or "")
+    if result.get("is_error") and _ACCOUNT_ERROR.search(message):
+        # The account can't make calls (no credit, bad key): not the agent's fault,
+        # and every later run would fail the same way. The batch stops on this.
+        return record("account_error", usages=usages, cost=cost, check=check, note=message[:300])
     if res.returncode != 0 or result.get("is_error"):
         if harness_error and not parsed.requests and not result:
             return record("harness_error", note=f"agent produced nothing: {(res.stderr or '')[-300:]}")
@@ -222,6 +231,8 @@ class Batch:
     solutions: dict[str, Path] = field(default_factory=dict)  # fake agent tests only
     spent: float = 0.0
     excluded: set[str] = field(default_factory=set)
+    stopped: str = ""  # set when the account can't make calls; no new runs start
+    done: set[tuple[str, str, int]] = field(default_factory=set)  # (commit, setup, repeat) already recorded (--resume)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def run(self, on_record=None) -> list[Record]:
@@ -238,7 +249,7 @@ class Batch:
         with AllowlistProxy() as proxy:  # Phase A, one commit at a time
             for c in self.commits:
                 workspace.prepare(c, self.layout, proxy)
-        jobs = [(c, s, r) for c in self.commits for r in range(self.repeats) for s in self.setups]
+        jobs = [(c, s, r) for c in self.commits for r in range(self.repeats) for s in self.setups if (c.sha, s.name, r) not in self.done]
         records: list[Record] = []
         with ThreadPoolExecutor(max_workers=self.cfg.parallel) as pool:
             for rec in pool.map(lambda job: self._job(*job), jobs):
@@ -251,7 +262,7 @@ class Batch:
     def _job(self, commit: Commit, setup: Setup, repeat: int) -> Record | None:
         for attempt in range(2):
             with self._lock:
-                if commit.sha in self.excluded:
+                if self.stopped or commit.sha in self.excluded:
                     return None
                 if self.spent + self.cfg.per_run_budget_usd > self.cfg.total_cap_usd:
                     return None  # would risk crossing the cap: stop launching
@@ -260,6 +271,8 @@ class Batch:
             with self._lock:
                 self.spent += rec.cost_usd - self.cfg.per_run_budget_usd  # settle to actual
                 self._append(rec)
+                if rec.outcome == "account_error":
+                    self.stopped = rec.note
             if rec.outcome != "harness_error":
                 return rec
         with self._lock:
@@ -276,6 +289,25 @@ class Batch:
             fh.write(json.dumps({"excluded_commit": sha, "reason": "harness_error twice"}) + "\n")
 
 
+def completed(path: Path) -> set[tuple[str, str, int]]:
+    """Runs in a results file that really happened, for --resume.
+
+    An agent_error with no requests and no cost never reached the model (e.g.
+    the account had no credit before account_error existed), so it is redone.
+    """
+    if not path.exists():
+        return set()
+    done = set()
+    for line in path.read_text().splitlines():
+        d = json.loads(line) if line.strip() else {}
+        if "outcome" not in d or d["outcome"] in ("harness_error", "account_error"):
+            continue
+        if d["outcome"] == "agent_error" and not d["usages"] and not d["cost_usd"]:
+            continue
+        done.add((d["commit"], d["setup"], d["repeat"]))
+    return done
+
+
 def load_results(path: Path) -> tuple[list[Record], set[str]]:
     records, excluded = [], set()
     for line in path.read_text().splitlines():
@@ -286,7 +318,16 @@ def load_results(path: Path) -> tuple[list[Record], set[str]]:
             excluded.add(data["excluded_commit"])
         else:
             records.append(Record(**data))
-    final = [r for r in records if r.outcome != "harness_error" and r.commit not in excluded]
+    # The last record per (commit, setup, repeat) wins, so --resume can redo dead runs.
+    latest: dict[tuple[str, str, int], Record] = {}
+    for r in records:
+        latest[(r.commit, r.setup, r.repeat)] = r
+    final = [
+        r for r in latest.values()
+        if r.outcome not in ("harness_error", "account_error")
+        and not (r.outcome == "agent_error" and not r.usages and not r.cost_usd)
+        and r.commit not in excluded
+    ]
     return final, excluded
 
 

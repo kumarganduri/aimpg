@@ -199,3 +199,17 @@ def test_hint_mode_keeps_tests_hidden(prepared):
     _, commit, _, _ = prepared
     assert "tests/test_mul.py" not in task_text(commit, "hint")
     assert task_text(commit, "hint") == commit.task
+
+
+def test_no_credit_stops_the_batch_and_is_never_held_against_the_agent(prepared, tmp_path):
+    layout, commit, _, _ = prepared
+    rec = run_one(commit, fake("nocredit"), 0, layout, cfg())
+    assert rec.outcome == "account_error" and "Credit balance" in rec.note
+
+    results = tmp_path / "r.jsonl"
+    batch = Batch([commit], [fake("nocredit")], repeats=3, layout=layout, cfg=Config("m", 0.5, 10, parallel=1), results=results)
+    batch.run()
+    assert batch.stopped
+    assert len(results.read_text().splitlines()) == 1  # stopped after the first, no more launches
+    loaded, _ = load_results(results)
+    assert loaded == []  # not counted as an agent failure

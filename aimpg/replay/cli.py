@@ -52,6 +52,7 @@ def add_parser(sub) -> None:
             c.add_argument("--commits", type=int, default=10)
             c.add_argument("--repeats", type=int, default=2)
             c.add_argument("--cap", type=float, required=True, help="total USD cap for the whole run")
+            c.add_argument("--resume", type=Path, help="results file of an earlier run: only missing runs are done, appended there")
 
     t = rsub.add_parser("stats", help="verdicts from a results file (free)")
     t.add_argument("results", type=Path)
@@ -110,23 +111,30 @@ def _paid(repos: list[Path], args, *, calibrate: bool) -> int:
         print(f"Only {len(commits)} replayable commits selected; need {n_commits}.")
         return 1
     chosen = random.Random(7).sample(commits, n_commits)
-    runs = n_commits * len(setups) * repeats
+    done = runner.completed(args.resume) if getattr(args, "resume", None) else set()
+    todo = [(c.sha, s.name, r) for c in chosen for r in range(repeats) for s in setups]
+    runs = sum(1 for job in todo if job not in done)
+    if done:
+        print(f"Resuming {args.resume.name}: {len(todo) - runs} runs already done, {runs} to go.")
     cap = runs * args.per_run_budget if calibrate else args.cap
-    print(f"Plan: {n_commits} commits × {len(setups)} setups × {repeats} repeats = {runs} agent runs on {args.model} (task mode: {args.task_mode})")
+    print(f"Plan: {n_commits} commits × {len(setups)} setups × {repeats} repeats = {len(todo)} agent runs on {args.model} (task mode: {args.task_mode})")
     print(f"Per-run cap ${args.per_run_budget:.2f}; total cap ${cap:.2f} (worst case; usually far less).")
     if not args.yes and input("Spend up to that on your API key? [y/N] ").strip().lower() != "y":
         print("Stopped. Nothing was spent.")
         return 1
     out_dir = _state(repos[0]) if len(repos) == 1 else _state(Path("+".join(r.name for r in repos)))
-    results = out_dir / f"{'calibration' if calibrate else 'run'}-{args.task_mode}-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+    results = args.resume if getattr(args, "resume", None) else out_dir / f"{'calibration' if calibrate else 'run'}-{args.task_mode}-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
     cfg = runner.Config(model=args.model, per_run_budget_usd=args.per_run_budget, total_cap_usd=cap, api_key=api_key, task_mode=args.task_mode)
-    batch = runner.Batch(chosen, setups, repeats, Layout(ROOT), cfg, results)
+    batch = runner.Batch(chosen, setups, repeats, Layout(ROOT), cfg, results, done=done)
 
     def show(rec: runner.Record) -> None:
         print(f"  {rec.setup:<20} {rec.commit[:8]} r{rec.repeat}  {rec.outcome:<13} ${rec.cost_usd:.2f}  {rec.wall_s:.0f}s  tokens:{rec.tokens_check}")
 
     batch.run(on_record=show)
     print(f"\nSpent ${batch.spent:.2f}. Results: {results}")
+    if batch.stopped:
+        print(f"STOPPED EARLY: your Anthropic account can't make calls ({batch.stopped}). "
+              "Runs already finished are kept; top up or fix the key, then run again to fill in the rest.")
     return _stats(results, setups[0].name, calibration=calibrate, per_run_budget=args.per_run_budget)
 
 

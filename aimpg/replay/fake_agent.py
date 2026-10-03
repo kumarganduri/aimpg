@@ -84,6 +84,10 @@ def main() -> int:
     cwd = Path.cwd()
     result = {"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 0.01}
 
+    if mode == "nocredit":  # what Claude Code prints when the prepaid credit is gone
+        result.update(subtype="success", is_error=True, result="Credit balance is too low", total_cost_usd=0)
+        print(json.dumps(result))
+        return 1
     if mode == "timeout":
         transcript(cfg, cwd, model, 1)
         time.sleep(3600)
