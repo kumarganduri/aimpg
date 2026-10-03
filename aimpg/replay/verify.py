@@ -434,5 +434,5 @@ def _run(args) -> int:
         print(f"\nOriginal record said {prior['verdict']['answer']}; this rerun says {record['verdict']['answer']}"
               + (" (agrees)." if same else " (DISAGREES)."))
     print(f"\nRecord: {out}" + ("" if record["public"] else " (private: repo and commits are hashed; add --public to let others rerun it)"))
-    print(f"Anyone can recheck the math for free:  aimpg verify --check {out.name}")
+    print(f"Anyone can recheck the math for free:  aimpg verify --check {out}")
     return 0
