@@ -152,3 +152,26 @@ def test_resume_plan_counts_only_missing_runs(tmp_path, monkeypatch, capsys):
     main(["replay", "run", str(tmp_path / "repo"), "--commits", "2", "--cap", "9", "--setups", "claude-code,claude-code+rtk", "--resume", str(prior)])
     out = capsys.readouterr().out
     assert "1 runs already done, 7 to go" in out
+
+
+def test_models_command_plans_one_setup_per_model(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(replay_cli, "STATE", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-not-used")
+    from aimpg.replay import select
+    from aimpg.replay.workspace import Commit
+
+    (tmp_path / "repo").mkdir()
+    select.save([Commit("/r", f"{i:040d}", "p", "s", "", ["t.py"], ["a.py"]) for i in range(12)], tmp_path / "repo" / "selected.jsonl")
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    assert main(["replay", "models", str(tmp_path / "repo"), "--commits", "10", "--cap", "15", "--task-mode", "tests"]) == 1
+    assert "10 commits × 3 setups × 1 repeats = 30 agent runs" in capsys.readouterr().out
+
+
+def test_stats_on_a_model_picker_file_prints_the_picker(tmp_path, capsys):
+    rows = [record(f"c{c}", f"claude-code@{m}", 0, True, 1.0, cost=cost) | {"model": mid}
+            for c in range(3) for m, mid, cost in (("haiku", "claude-haiku-4-5", 0.03), ("sonnet", "claude-sonnet-5-5", 0.14))]
+    path = tmp_path / "models.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    assert main(["replay", "stats", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "Use haiku" in out and "$ / solved task" in out

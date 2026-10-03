@@ -20,7 +20,8 @@ from aimpg.gitkept import DAY
 from aimpg.replay import run as runner
 from aimpg.replay import select, stats
 from aimpg.replay.proxy import AllowlistProxy
-from aimpg.replay.setups import SETUPS
+from aimpg.replay import picker
+from aimpg.replay.setups import SETUPS, with_model
 from aimpg.replay.workspace import Layout
 
 ROOT = Path("/private/tmp/aimpg-replay")  # outside $HOME; every agent profile denies it
@@ -39,7 +40,11 @@ def add_parser(sub) -> None:
     s.add_argument("--cutoff", default="2026-07-01", help="model training cutoff (YYYY-MM-DD); older commits are skipped")
     s.add_argument("--max", type=int, default=30, help="stop after this many qualifying commits")
 
-    for name, help_ in (("calibrate", "paid: measure cost and noise on 2 commits"), ("run", "paid: the full comparison")):
+    for name, help_ in (
+        ("calibrate", "paid: measure cost and noise on 2 commits"),
+        ("run", "paid: the full comparison"),
+        ("models", "paid: model picker, the cheapest model that's good enough for your code"),
+    ):
         c = rsub.add_parser(name, help=help_)
         c.add_argument("repos", type=Path, nargs="+", help="one or more repos already run through `select`")
         c.add_argument("--model", default=DEFAULT_MODEL)
@@ -48,9 +53,11 @@ def add_parser(sub) -> None:
         c.add_argument("--yes", action="store_true", help="skip the cost confirmation prompt")
         c.add_argument("--task-mode", choices=("hint", "tests"), default="hint",
                        help="hint: commit message + new names, tests hidden (default); tests: commit's tests shown")
-        if name == "run":
+        if name == "models":
+            c.add_argument("--models", default="haiku,sonnet,opus", help="comma list: haiku, sonnet, opus or full model ids")
+        if name in ("run", "models"):
             c.add_argument("--commits", type=int, default=10)
-            c.add_argument("--repeats", type=int, default=2)
+            c.add_argument("--repeats", type=int, default=2 if name == "run" else 1)
             c.add_argument("--cap", type=float, required=True, help="total USD cap for the whole run")
             c.add_argument("--resume", type=Path, help="results file of an earlier run: only missing runs are done, appended there")
 
@@ -71,7 +78,7 @@ def main(args: argparse.Namespace) -> int:
         return _stats(args.results, args.baseline)
     if cmd == "select":
         return _select(args.repo.resolve(), args)
-    return _paid([r.resolve() for r in args.repos], args, calibrate=(cmd == "calibrate"))
+    return _paid([r.resolve() for r in args.repos], args, calibrate=(cmd == "calibrate"), models=(cmd == "models"))
 
 
 def _select(repo: Path, args) -> int:
@@ -95,7 +102,7 @@ def _select(repo: Path, args) -> int:
     return 0 if good else 1
 
 
-def _paid(repos: list[Path], args, *, calibrate: bool) -> int:
+def _paid(repos: list[Path], args, *, calibrate: bool, models: bool = False) -> int:
     for repo in repos:
         if not (_state(repo) / "selected.jsonl").exists():
             print(f"Run `aimpg replay select {repo}` first.")
@@ -105,7 +112,10 @@ def _paid(repos: list[Path], args, *, calibrate: bool) -> int:
         print("Set ANTHROPIC_API_KEY in your shell first (Anthropic Console → API keys). aimpg never stores it.")
         return 1
     commits = [c for repo in repos for c in select.load(_state(repo) / "selected.jsonl")]
-    setups = [SETUPS[name.strip()] for name in args.setups.split(",")]
+    if models:
+        setups = [with_model(m.strip()) for m in args.models.split(",")]
+    else:
+        setups = [SETUPS[name.strip()] for name in args.setups.split(",")]
     n_commits, repeats = (2, 2) if calibrate else (args.commits, args.repeats)
     if len(commits) < n_commits:
         print(f"Only {len(commits)} replayable commits selected; need {n_commits}.")
@@ -123,7 +133,8 @@ def _paid(repos: list[Path], args, *, calibrate: bool) -> int:
         print("Stopped. Nothing was spent.")
         return 1
     out_dir = _state(repos[0]) if len(repos) == 1 else _state(Path("+".join(r.name for r in repos)))
-    results = args.resume if getattr(args, "resume", None) else out_dir / f"{'calibration' if calibrate else 'run'}-{args.task_mode}-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+    kind = "calibration" if calibrate else "models" if models else "run"
+    results = args.resume if getattr(args, "resume", None) else out_dir / f"{kind}-{args.task_mode}-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
     cfg = runner.Config(model=args.model, per_run_budget_usd=args.per_run_budget, total_cap_usd=cap, api_key=api_key, task_mode=args.task_mode)
     batch = runner.Batch(chosen, setups, repeats, Layout(ROOT), cfg, results, done=done)
 
@@ -140,6 +151,9 @@ def _paid(repos: list[Path], args, *, calibrate: bool) -> int:
 
 def _stats(path: Path, baseline: str, *, calibration: bool = False, per_run_budget: float = 2.0) -> int:
     records, excluded = runner.load_results(path)
+    if records and all(r.setup.startswith("claude-code@") for r in records):
+        print(picker.render(records))
+        return 0
     runs = [stats.Run(r.commit, r.setup, r.repeat, r.passed, [_usage(u) for u in r.usages], r.model) for r in records]
     setups = sorted({r.setup for r in records} - {baseline})
     if excluded:

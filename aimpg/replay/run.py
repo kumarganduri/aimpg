@@ -148,7 +148,7 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
     started = time.time()
 
     def record(outcome: str, *, usages=(), cost=0.0, check="", note="") -> Record:
-        return Record(run_id, commit.repo, commit.sha, setup.name, repeat, outcome, outcome == "passed", cfg.model, cost, round(time.time() - started, 1), [list(u) for u in usages], check, note[:500])
+        return Record(run_id, commit.repo, commit.sha, setup.name, repeat, outcome, outcome == "passed", setup.model or cfg.model, cost, round(time.time() - started, 1), [list(u) for u in usages], check, note[:500])
 
     try:
         work = workspace.clone_for_run(commit, layout, layout.prepared(commit.sha), run_id)

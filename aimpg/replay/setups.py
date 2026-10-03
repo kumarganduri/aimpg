@@ -34,6 +34,7 @@ class Setup:
     configure: Callable[[Path], None] | None = None  # writes into the run's fresh config dir
     requires: tuple[str, ...] = ("claude",)
     program: list[str] = field(default_factory=lambda: ["claude"])
+    model: str | None = None  # overrides the batch's model (model picker)
 
     def check(self) -> None:
         missing = [b for b in self.requires if shutil.which(b) is None]
@@ -48,7 +49,7 @@ class Setup:
             "--output-format",
             "json",
             "--model",
-            model,
+            self.model or model,
             "--max-budget-usd",
             f"{budget_usd:.2f}",
             "--dangerously-skip-permissions",  # safe: the sandbox is the permission boundary
@@ -101,6 +102,18 @@ def fake(mode: str) -> Setup:
 
 
 SETUPS = {s.name: s for s in (BASELINE, TERSE, RTK)}
+
+MODELS = {  # short names for the model picker → model ids Claude Code accepts
+    "haiku": "claude-haiku-4-5-20251001",
+    "sonnet": "claude-sonnet-5-5",
+    "opus": "claude-opus-5-5",
+}
+
+
+def with_model(model: str) -> Setup:
+    """Plain Claude Code on a specific model: the model picker's setups."""
+    model_id = MODELS.get(model, model)
+    return Setup(f"claude-code@{model}", model=model_id)
 
 
 def parse_result(stdout: str) -> dict:
