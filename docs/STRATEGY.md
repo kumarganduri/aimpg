@@ -62,5 +62,5 @@ The core stays **free and open source forever**: everything for individuals, the
 - Claude Code only (Phase 1 adds Codex and Cursor).
 - Energy ranges are about 8x wide (anchor them to disclosed figures such as Google's median prompt energy).
 - Small samples (n=10 on one repo); the scoreboard fixes this over time.
-- Replays are macOS-only (Phase 2: Linux).
+- ~~Replays are macOS-only~~ Linux (bubblewrap) added 2026-10-05, tested in CI on Ubuntu 24.04.
 - Rebound: cheaper tasks can lead to more tasks. Report totals as well as per-change figures.

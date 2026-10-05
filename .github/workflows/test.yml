@@ -27,6 +27,8 @@ jobs:
           printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile bwrap /usr/bin/bwrap flags=(unconfined) {\n  userns,\n  include if exists <local/bwrap>\n}\n' | sudo tee /etc/apparmor.d/bwrap
           sudo apparmor_parser -r /etc/apparmor.d/bwrap
       - run: git config --global user.email ci@example.com && git config --global user.name CI
+      - name: an SSH agent for the sandbox to fail to reach
+        run: ssh-agent -a /tmp/aimpg-ci-agent.sock && echo "SSH_AUTH_SOCK=/tmp/aimpg-ci-agent.sock" >> "$GITHUB_ENV"
       - run: uv run --group dev pytest -q -rs tests/test_sandbox_required.py tests/test_replay_sandbox.py tests/test_replay_e2e.py
         env:
           AIMPG_REQUIRE_SANDBOX: "1"
