@@ -20,6 +20,7 @@ from aimpg.gitkept import DAY
 from aimpg.logs import DEFAULT_ROOT, iter_log_files, parse_logs
 from aimpg.receipt import render
 from aimpg.replay import cli as replay_cli
+from aimpg import scoreboard as scoreboard_mod
 from aimpg.replay import verify as verify_mod
 
 
@@ -73,11 +74,14 @@ def main(argv: list[str] | None = None) -> int:
 
     replay_cli.add_parser(sub)
     verify_mod.add_parser(sub)
+    scoreboard_mod.add_parsers(sub)
     args = parser.parse_args(argv)
     if args.command == "replay":
         return replay_cli.main(args)
     if args.command == "verify":
         return verify_mod.main(args)
+    if args.command in ("submit", "scoreboard"):
+        return scoreboard_mod.main(args)
     if args.command in ("statusline", "hook", "live"):
         from aimpg import live as live_mod
 

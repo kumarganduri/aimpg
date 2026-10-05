@@ -94,3 +94,6 @@ def _never_read_the_real_agent_logs(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(ledger, "LEDGER", tmp_path_factory.mktemp("ledger") / "ledger.json")
     monkeypatch.setattr(replay_cli, "STATE", tmp_path_factory.mktemp("replay-state"))
     monkeypatch.setattr(verify, "STATE", tmp_path_factory.mktemp("verify-state"))
+    from aimpg import scoreboard
+
+    monkeypatch.setattr(scoreboard, "SECRET", tmp_path_factory.mktemp("aimpg-id") / "id")

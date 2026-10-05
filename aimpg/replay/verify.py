@@ -211,6 +211,12 @@ def _spec(setup: S.Setup, public: bool) -> dict:
     return spec
 
 
+def _repo_id(repo: str) -> str | None:
+    from aimpg.scoreboard import repo_id
+
+    return repo_id(repo)
+
+
 def build_record(records: list[Record], *, claim: str, baseline: S.Setup, challenger: S.Setup, repo: str,
                  task_mode: str, public: bool, extra: dict | None = None,
                  attempts: list[Record] | None = None, excluded: set[str] | None = None) -> dict:
@@ -233,6 +239,7 @@ def build_record(records: list[Record], *, claim: str, baseline: S.Setup, challe
         "claim": claim,
         "public": public,
         "repo": _remote(repo) if public else hide(os.path.realpath(repo)),
+        "repo_id": _repo_id(repo),  # keyed with a local secret: lets the scoreboard count repos
         "task_mode": task_mode,
         "versions": _versions(),
         "baseline": _spec(baseline, public),
@@ -518,9 +525,12 @@ def _run(args) -> int:
     if batch.stopped:
         print(f"STOPPED EARLY: an account can't make calls ({batch.stopped}). Fix it, then rerun with --resume {results}")
     records, excluded = runner.load_results(results)
+    # A rerun of a scoreboard upload names it by the upload's SHA-256 (its file name there)
+    rerun_of = hashlib.sha256(args.rerun.read_bytes()).hexdigest() if prior and prior.get("aimpg_upload") else None
     record = build_record(records, claim=claim, baseline=baseline, challenger=challenger, repo=str(repo),
                           task_mode=task_mode, public=args.public if not prior else True,
-                          attempts=runner.all_attempts(results), excluded=excluded)
+                          attempts=runner.all_attempts(results), excluded=excluded,
+                          extra={"rerun_of": rerun_of} if rerun_of else None)
     out = results.with_suffix(".record.json")
     out.write_text(json.dumps(record, indent=1))
     print()
