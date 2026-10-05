@@ -149,6 +149,7 @@ def _sandboxed(layout: Layout, name: str, work: Path, argv: list[str], *, proxy:
         readable=sandbox.tool_dirs() + ([UV_PYTHON] if UV_PYTHON.is_dir() else []),
         deny_roots=[layout.root],
         proxy_port=proxy.port if proxy is not None else None,
+        proxy_socket=proxy.socket_path if proxy is not None else None,
     )
     return sandbox.run(argv, profile=profile, profile_path=layout.profile_path(name), env=env, cwd=work, timeout=timeout)
 
@@ -221,7 +222,9 @@ def clone_for_run(commit: Commit, layout: Layout, prepared: Path, run_id: str) -
         shutil.rmtree(run_dir)
     run_dir.mkdir(parents=True)
     work = run_dir / "work"
-    subprocess.run(["cp", "-c", "-R", str(prepared), str(work)], check=True)
+    # copy-on-write clone: APFS on macOS, reflink (btrfs/xfs) on Linux, else a plain copy
+    clone = ["cp", "-c", "-R"] if sandbox.sys.platform == "darwin" else ["cp", "-a", "--reflink=auto"]
+    subprocess.run([*clone, str(prepared), str(work)], check=True)
     (work / ".prepared").unlink(missing_ok=True)
     if commit.kind == "python":
         _check(_sandboxed(layout, run_id, work, ["uv", "sync", "--offline", "--all-groups", "--quiet"], proxy=None, timeout=300), "offline re-sync")

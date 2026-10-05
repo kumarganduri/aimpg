@@ -15,7 +15,11 @@ The allowlist changes per phase:
 from __future__ import annotations
 
 import asyncio
+import shutil
+import sys
+import tempfile
 import threading
+from pathlib import Path
 from dataclasses import dataclass, field
 
 PYPI = frozenset({"pypi.org", "files.pythonhosted.org"})
@@ -33,6 +37,9 @@ class AllowlistProxy:
     port: int = 0
     upstream_port: int = 443  # tests point this at a local echo server
     log: list[tuple[str, str]] = field(default_factory=list)  # ("ALLOW" | "BLOCK", "host:port")
+    # Linux: also a Unix socket, bound into the sandbox (its private network can't reach host ports)
+    socket_path: Path | None = None
+    unix: bool = field(default_factory=lambda: sys.platform.startswith("linux"))
     _loop: asyncio.AbstractEventLoop | None = None
     _thread: threading.Thread | None = None
     _ready: threading.Event = field(default_factory=threading.Event)
@@ -49,6 +56,8 @@ class AllowlistProxy:
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread is not None:
             self._thread.join(5)
+        if self.socket_path is not None:
+            shutil.rmtree(self.socket_path.parent, ignore_errors=True)
 
     def set_allow(self, hosts: frozenset[str]) -> None:
         self.allow = frozenset(hosts)
@@ -65,16 +74,23 @@ class AllowlistProxy:
         asyncio.set_event_loop(self._loop)
         server = self._loop.run_until_complete(asyncio.start_server(self._handle, "127.0.0.1", self.port))
         self.port = server.sockets[0].getsockname()[1]
+        servers = [server]
+        if self.unix:
+            # its own folder: the sandbox gets only this folder, nothing else from /tmp
+            self.socket_path = Path(tempfile.mkdtemp(prefix="aimpg-proxy-", dir="/tmp")) / "proxy.sock"
+            servers.append(self._loop.run_until_complete(asyncio.start_unix_server(self._handle, str(self.socket_path))))
         self._ready.set()
         try:
             self._loop.run_forever()
         finally:
-            server.close()
+            for srv in servers:
+                srv.close()
             pending = [t for t in asyncio.all_tasks(self._loop) if not t.done()]
             for task in pending:
                 task.cancel()
             self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            self._loop.run_until_complete(server.wait_closed())
+            for srv in servers:
+                self._loop.run_until_complete(srv.wait_closed())
             self._loop.close()
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

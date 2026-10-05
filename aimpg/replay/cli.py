@@ -21,10 +21,11 @@ from aimpg.replay import run as runner
 from aimpg.replay import select, stats
 from aimpg.replay.proxy import AllowlistProxy
 from aimpg.replay import picker
+from aimpg.replay import sandbox
 from aimpg.replay.setups import SETUPS, with_model
 from aimpg.replay.workspace import Layout
 
-ROOT = Path("/private/tmp/aimpg-replay")  # outside $HOME; every agent profile denies it
+ROOT = sandbox.TMP / "aimpg-replay"  # outside $HOME; every agent profile denies it
 STATE = Path.home() / ".aimpg" / "replay"  # selections + results, unreadable to agents
 DEFAULT_MODEL = "claude-sonnet-5-5"
 DEFAULT_SETUPS = "claude-code,claude-code+terse,claude-code+rtk"

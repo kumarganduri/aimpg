@@ -12,11 +12,25 @@ under it; the workdir is re-allowed. Added for replays:
 * read-only access to the agent's and toolchain's own install folders under
   $HOME (Claude Code, uv, node), found by resolving the binaries.
 
-Linux (bwrap) is a TODO; other platforms raise SandboxUnavailable.
+Linux: the same policy through bubblewrap (adapted from Legwork's
+`_bwrap_args`): the system read-only; home folders, /tmp, /var/tmp and /run
+replaced by empty private tmpfs (so other runs, the answer repo and local
+sockets such as the SSH agent are gone); only this run's folders bound back
+writable, the agent's install folders read-only. Every namespace is
+unshared, network included. The allowlisting proxy can't be reached as a
+host port from a private network namespace, so it also listens on a Unix
+socket that is bound in, and a tiny relay inside the sandbox listens on
+127.0.0.1:<the same port> and forwards to it. Ubuntu 24.04+ needs an
+AppArmor profile that lets bwrap (only) create user namespaces; the error
+message prints it.
+
+Other platforms raise SandboxUnavailable.
 """
 
 from __future__ import annotations
 
+import functools
+import json
 import os
 import shutil
 import signal
@@ -40,6 +54,8 @@ _MACH_SERVICES = (
     "com.apple.cfprefsd.daemon",
     "com.apple.cfprefsd.agent",
 )
+# Where replay data lives: outside $HOME on both systems.
+TMP = Path("/private/tmp") if sys.platform == "darwin" else Path("/tmp")
 TOOLS = ("claude", "codex", "uv", "node", "npm", "npx", "git", "rtk")
 
 
@@ -48,7 +64,57 @@ class SandboxUnavailable(RuntimeError):
 
 
 def available() -> bool:
-    return sys.platform == "darwin" and shutil.which("sandbox-exec") is not None
+    return unavailable_reason() is None
+
+
+BWRAP_APPARMOR_PROFILE = """abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+  include if exists <local/bwrap>
+}
+"""
+
+
+def unavailable_reason() -> str | None:
+    """Why replays can't be sandboxed here, with the fix; None if they can."""
+    if sys.platform == "darwin":
+        return None if _launcher("sandbox-exec") else "sandbox-exec is missing (it ships with macOS)"
+    if sys.platform.startswith("linux"):
+        if not _launcher("bwrap"):
+            return "replays on Linux need bubblewrap: sudo apt install bubblewrap (or dnf/pacman)"
+        error = _bwrap_probe()
+        if error is None:
+            return None
+        hint = ""
+        try:
+            if Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").read_text().strip() == "1":
+                hint = ("\nUbuntu 24.04+ restricts user namespaces with AppArmor; allow them for bwrap only:\n"
+                        "  sudo tee /etc/apparmor.d/bwrap <<'EOF'\n" + BWRAP_APPARMOR_PROFILE + "EOF\n"
+                        "  sudo apparmor_parser -r /etc/apparmor.d/bwrap")
+        except OSError:
+            pass
+        return f"bubblewrap can't create a sandbox here ({error}){hint}"
+    return f"replays need macOS or Linux (not {sys.platform})"
+
+
+@functools.lru_cache(maxsize=None)
+def _launcher(name: str) -> str | None:
+    """Absolute path of the sandbox launcher, looked up in system folders only,
+    never in the child's PATH (which a sandboxed step could plant a fake in)."""
+    found = shutil.which(name, path="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin")
+    return os.path.realpath(found) if found else None
+
+
+@functools.lru_cache(maxsize=1)
+def _bwrap_probe() -> str | None:
+    try:
+        r = subprocess.run([_launcher("bwrap"), "--unshare-all", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "true"],
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return str(exc)
+    return None if r.returncode == 0 else (r.stderr.strip() or f"exit {r.returncode}")
 
 
 def tool_dirs(tools: tuple[str, ...] = TOOLS) -> list[Path]:
@@ -93,6 +159,7 @@ class Profile:
     readable: list[Path] = field(default_factory=list)
     deny_roots: list[Path] = field(default_factory=list)
     proxy_port: int | None = None  # None: no network at all
+    proxy_socket: Path | None = None  # Linux: the proxy's Unix socket, relayed to 127.0.0.1:proxy_port inside
 
     def render(self) -> str:
         home = str(Path.home().resolve())
@@ -126,6 +193,79 @@ class Profile:
         return "\n".join(lines) + "\n"
 
 
+def bwrap_args(profile: Profile, cwd: Path) -> list[str]:
+    """Linux equivalent of Profile.render (see the module docstring)."""
+    home = Path.home().resolve()
+    hidden = sorted({p for p in (Path("/home"), Path("/root"), home) if p.is_dir()}, key=lambda p: len(p.parts))
+    args = [_launcher("bwrap") or "/usr/bin/bwrap", "--unshare-all", "--die-with-parent", "--new-session",
+            "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+            "--tmpfs", "/tmp", "--tmpfs", "/var/tmp", "--tmpfs", "/run"]
+    if os.path.isdir("/var/run") and not os.path.islink("/var/run"):
+        args += ["--tmpfs", "/var/run"]
+    for d in hidden:
+        args += ["--tmpfs", str(d)]
+    for root in profile.deny_roots:  # e.g. the answer repo, wherever it lives
+        r = Path(root).resolve()
+        if r.is_dir() and not any(r == h or h in r.parents for h in (*hidden, Path("/tmp"), Path("/var/tmp"))):
+            args += ["--tmpfs", str(r)]
+    for d in profile.readable:
+        d = Path(d).resolve()
+        if d.exists():
+            args += ["--ro-bind", str(d), str(d)]
+    if profile.proxy_socket is not None:
+        python = Path(sys.base_prefix).resolve()  # the relay runs on this Python's stdlib
+        args += ["--ro-bind", str(python), str(python)]
+        sock_dir = Path(profile.proxy_socket).parent.resolve()
+        args += ["--bind", str(sock_dir), str(sock_dir)]
+    for d in profile.writable:
+        d = Path(d).resolve()
+        args += ["--bind", str(d), str(d)]
+    for d in reversed(hidden):  # stand-in homes read-only: writes fail as on macOS
+        args += ["--remount-ro", str(d)]
+    args += ["--chdir", str(Path(cwd).resolve())]
+    return args
+
+
+# Runs inside the Linux sandbox as `python -c`: 127.0.0.1:PORT -> the proxy's Unix socket.
+_RELAY = """
+import socket, subprocess, sys, threading
+sock_path, port, argv = sys.argv[1], int(sys.argv[2]), sys.argv[4:]
+def pipe(a, b):
+    try:
+        while True:
+            data = a.recv(65536)
+            if not data:
+                break
+            b.sendall(data)
+    except OSError:
+        pass
+    finally:
+        for s in (a, b):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+def serve(srv):
+    while True:
+        client, _ = srv.accept()
+        try:
+            up = socket.socket(socket.AF_UNIX)
+            up.connect(sock_path)
+        except OSError:
+            client.close()
+            continue
+        threading.Thread(target=pipe, args=(client, up), daemon=True).start()
+        threading.Thread(target=pipe, args=(up, client), daemon=True).start()
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", port))
+srv.listen(64)
+threading.Thread(target=serve, args=(srv,), daemon=True).start()
+code = subprocess.call(argv)
+sys.exit(code if code >= 0 else 128 - code)
+"""
+
+
 def _ancestors(paths: list[str], roots: list[str]) -> set[str]:
     """Parent dirs between a denied root and an allowed path: metadata only, so realpath() works."""
     out = set()
@@ -152,11 +292,20 @@ class Result:
 
 def run(argv: list[str], *, profile: Profile, profile_path: Path, env: dict[str, str], cwd: Path, timeout: float) -> Result:
     """Run argv inside the sandbox. The whole process group is killed on timeout."""
-    if not available():
-        raise SandboxUnavailable("replays need macOS (sandbox-exec); Linux support is on the roadmap")
-    profile_path.write_text(profile.render())
+    reason = unavailable_reason()
+    if reason:
+        raise SandboxUnavailable(reason)
+    if sys.platform == "darwin":
+        profile_path.write_text(profile.render())
+        full = [_launcher("sandbox-exec"), "-f", str(profile_path), *argv]
+    else:
+        inner = argv
+        if profile.proxy_socket is not None:
+            inner = [str(Path(sys.executable).resolve()), "-I", "-c", _RELAY, str(profile.proxy_socket), str(profile.proxy_port), "--", *argv]
+        full = [*bwrap_args(profile, cwd), "--", *inner]
+        profile_path.write_text(json.dumps(full[:-len(argv)] if argv else full, indent=1))  # audit copy
     proc = subprocess.Popen(
-        ["sandbox-exec", "-f", str(profile_path), *argv],
+        full,
         cwd=cwd,
         env=env,
         stdin=subprocess.DEVNULL,  # Codex waits for "additional input" on an open stdin

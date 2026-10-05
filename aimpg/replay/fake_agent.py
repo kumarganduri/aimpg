@@ -53,18 +53,23 @@ def transcript(cfg: Path, cwd: Path, model: str, n: int) -> tuple[dict, dict]:
 
 
 def escape_attempts(cwd: Path, cfg: Path) -> list[str]:
-    """Every attempt that SUCCEEDS is a sandbox bug."""
+    """Every attempt that SUCCEEDS is a sandbox bug.
+
+    Seeing a folder counts only if real content shows: on Linux, home and the
+    runs folder are empty private stand-ins, which is the sandbox working.
+    """
     succeeded = []
     real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
-    for target in (real_home, real_home / ".ssh", cwd.parent.parent):  # home, keys, sibling runs
+    own_run = cwd.parent.name
+    for target, allowed in ((real_home, set()), (real_home / ".ssh", set()), (cwd.parent.parent, {own_run})):
         try:
-            os.listdir(target)
-            succeeded.append(f"read {target}")
+            if set(os.listdir(target)) - allowed:
+                succeeded.append(f"read {target}")
         except OSError:
             pass
     try:
-        Path("/private/tmp/aimpg-escape-probe").write_text("x")
-        succeeded.append("write /private/tmp")
+        (real_home / "aimpg-escape-probe").write_text("x")
+        succeeded.append("write to home")
     except OSError:
         pass
     probe = subprocess.run(["/usr/bin/curl", "-s", "-m", "5", "-o", "/dev/null", "-w", "%{http_code}", "--noproxy", "*", "https://github.com"], capture_output=True, text=True)

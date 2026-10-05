@@ -215,6 +215,7 @@ def _run_agent(commit: Commit, setup: Setup, layout: Layout, cfg: Config, work: 
             # the source repo too: it holds the answer, and may live outside $HOME
             deny_roots=[layout.root, Path(commit.repo)],
             proxy_port=proxy.port,
+            proxy_socket=proxy.socket_path,
         )
         res = sandbox.run(
             setup.argv(task_text(commit, cfg.task_mode), cfg.model, cfg.per_run_budget_usd, cfgdir),

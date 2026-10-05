@@ -1,7 +1,7 @@
 name: test
 on:
   push:
-    branches: [main]
+    branches: [main, "linux-*"]
   pull_request:
 jobs:
   test:
@@ -15,3 +15,18 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: git config --global user.email ci@example.com && git config --global user.name CI
       - run: uv run --python ${{ matrix.python }} --group dev pytest -q
+  linux-sandbox:
+    # Replays on Linux: bubblewrap + the AppArmor rule Ubuntu 24.04 needs for bwrap only
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: sudo apt-get update -q && sudo apt-get install -y -q bubblewrap
+      - name: allow user namespaces for bwrap only
+        run: |
+          printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile bwrap /usr/bin/bwrap flags=(unconfined) {\n  userns,\n  include if exists <local/bwrap>\n}\n' | sudo tee /etc/apparmor.d/bwrap
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+      - run: git config --global user.email ci@example.com && git config --global user.name CI
+      - run: uv run --group dev pytest -q -rs tests/test_sandbox_required.py tests/test_replay_sandbox.py tests/test_replay_e2e.py
+        env:
+          AIMPG_REQUIRE_SANDBOX: "1"

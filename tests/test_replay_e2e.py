@@ -19,7 +19,7 @@ from aimpg.replay.setups import fake
 from aimpg.replay.workspace import Layout
 from aimpg.replay.proxy import AllowlistProxy
 
-pytestmark = [pytest.mark.network, pytest.mark.skipif(not sandbox.available(), reason="macOS only")]
+pytestmark = [pytest.mark.network, pytest.mark.skipif(not sandbox.available(), reason=str(sandbox.unavailable_reason()))]
 
 PYPROJECT = """[project]
 name = "calc"
@@ -64,7 +64,7 @@ def fixture_repo(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def prepared(fixture_repo, tmp_path_factory):
-    root = Path("/private/tmp") / f"aimpg-e2e-{int(time.time())}"
+    root = sandbox.TMP / f"aimpg-e2e-{int(time.time())}"
     layout = Layout(root)
     (commit,), _ = candidates(str(fixture_repo), time.time() - 30 * 86400, cutoff=0)
     with AllowlistProxy() as proxy:
@@ -170,7 +170,7 @@ def test_commit_whose_tests_only_check_names_is_dropped(tmp_path_factory):
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "feat: expose a version string for the calc module", when=now - 2 * 86400)
     (commit,), _ = candidates(str(repo), now - 30 * 86400, cutoff=0)
-    layout = Layout(Path("/private/tmp") / f"aimpg-e2e-giveaway-{int(now)}")
+    layout = Layout(sandbox.TMP / f"aimpg-e2e-giveaway-{int(now)}")
     try:
         with AllowlistProxy() as proxy:
             check = precheck(commit, layout, proxy)
