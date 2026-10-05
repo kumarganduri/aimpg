@@ -194,16 +194,26 @@ def _remote(repo: str) -> str | None:
     return url or None
 
 
+# Texts that can hold internal details (a CLAUDE.md, a prompt, a command line,
+# an internal gateway's host). A private record keeps only their SHA-256, so
+# a setup can still be told apart without revealing it (privacy review, 2026-10-05).
+_PRIVATE_TEXT = ("append_prompt", "claude_md", "settings", "command", "hosts", "key_env")
+
+
 def _spec(setup: S.Setup, public: bool) -> dict:
-    spec = {"name": setup.name, **setup.spec}
+    spec = {k: v for k, v in {"name": setup.name, **setup.spec}.items() if v is not None}
     if not public:
-        spec.pop("command", None)
-        spec.pop("settings", None)
+        for key in _PRIVATE_TEXT:
+            value = spec.pop(key, None)
+            if value and f"{key}_sha256" not in spec:
+                text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+                spec[f"{key}_sha256"] = hashlib.sha256(text.encode()).hexdigest()
     return spec
 
 
 def build_record(records: list[Record], *, claim: str, baseline: S.Setup, challenger: S.Setup, repo: str,
-                 task_mode: str, public: bool, extra: dict | None = None) -> dict:
+                 task_mode: str, public: bool, extra: dict | None = None,
+                 attempts: list[Record] | None = None, excluded: set[str] | None = None) -> dict:
     salt = secrets.token_bytes(16)  # never stored: hashes are consistent within a record only
 
     def hide(text: str) -> str:
@@ -229,6 +239,14 @@ def build_record(records: list[Record], *, claim: str, baseline: S.Setup, challe
         "challenger": _spec(challenger, public),
         "runs": runs,
         "verdict": verdict(records, baseline.name, challenger.name),
+        # Nothing hidden: runs that were retried or redone, and commits dropped
+        # after two harness errors, stay visible (moderation review, 2026-10-05).
+        "superseded_attempts": [
+            {"commit": hide(a.commit), "setup": a.setup, "repeat": a.repeat, "outcome": a.outcome,
+             "cost_usd": a.cost_usd, "cost_known": a.cost_known}
+            for a in (attempts or []) if a.run_id not in {r.run_id for r in records}
+        ],
+        "excluded_commits": [{"commit": hide(c), "reason": "harness error twice"} for c in sorted(excluded or ())],
         **(extra or {}),
     }
 
@@ -243,6 +261,48 @@ def check(record: dict) -> tuple[bool, dict]:
         raise VerifyError("not an aimpg verify record (or a newer version: upgrade aimpg)")
     again = verdict(records_from(record), record["baseline"]["name"], record["challenger"]["name"])
     return _same(again, record["verdict"]), again
+
+
+OUTCOMES = {"passed", "tests_failed", "timeout", "budget_hit", "agent_error"}
+
+
+def integrity(record: dict) -> tuple[list[str], list[str]]:
+    """(problems, warnings). Problems mean the record can't be right; warnings are honest gaps.
+
+    This catches careless or naive edits. It cannot prove the runs happened.
+    """
+    problems, warnings = [], []
+    names = {record["baseline"]["name"], record["challenger"]["name"]}
+    seen = set()
+    for i, r in enumerate(record.get("runs", [])):
+        where = f"run {i}"
+        if r.get("outcome") not in OUTCOMES:
+            problems.append(f"{where}: unknown outcome {r.get('outcome')!r}")
+        if bool(r.get("passed")) != (r.get("outcome") == "passed"):
+            problems.append(f"{where}: passed={r.get('passed')} but outcome={r.get('outcome')}")
+        if r.get("setup") not in names:
+            problems.append(f"{where}: setup {r.get('setup')!r} is neither baseline nor challenger")
+        if not isinstance(r.get("cost_usd"), (int, float)) or r["cost_usd"] < 0:
+            problems.append(f"{where}: bad cost")
+        usages = r.get("usages", [])
+        if not all(isinstance(u, list) and len(u) == 4 and all(isinstance(x, int) and x >= 0 for x in u) for u in usages):
+            problems.append(f"{where}: token counts must be four non-negative whole numbers per request")
+        if r.get("agent") == "claude" and r.get("passed") and not usages:
+            problems.append(f"{where}: a solved Claude Code run with no token counts")
+        key = (r.get("commit"), r.get("setup"), r.get("repeat"))
+        if key in seen:
+            problems.append(f"{where}: duplicate run {key}")
+        seen.add(key)
+    commits = {k[0] for k in seen}
+    repeats = {k[2] for k in seen}
+    missing = [(c, s, n) for c in commits for s in names for n in repeats if (c, s, n) not in seen]
+    if missing:
+        warnings.append(f"{len(missing)} planned runs are missing (the $ cap was reached or the batch stopped)")
+    if record.get("superseded_attempts"):
+        warnings.append(f"{len(record['superseded_attempts'])} earlier attempts were redone (listed in the record)")
+    if record.get("excluded_commits"):
+        warnings.append(f"{len(record['excluded_commits'])} commits were excluded after harness errors")
+    return problems, warnings
 
 
 def _same(a, b) -> bool:
@@ -303,6 +363,7 @@ def add_parser(sub) -> None:
     v.add_argument("--resume", type=Path, help="results file of an interrupted verify")
     v.add_argument("--check", type=Path, metavar="RECORD", help="free: recompute a record's verdict")
     v.add_argument("--rerun", type=Path, metavar="RECORD", help="paid: rerun a --public record's commits and setups")
+    v.add_argument("--trust-record", action="store_true", help="--rerun: skip showing and confirming what the record will run")
 
 
 def main(args) -> int:
@@ -318,9 +379,15 @@ def main(args) -> int:
 def _check(path: Path) -> int:
     record = json.loads(path.read_text())
     ok, again = check(record)
+    problems, warnings = integrity(record)
     print(render(again, record.get("claim", ""), record["baseline"]["name"], record["challenger"]["name"]))
     print("\nRecomputed from the record's runs: " + ("MATCHES the recorded verdict." if ok else "DOES NOT MATCH the recorded verdict."))
-    return 0 if ok else 2
+    for p in problems:
+        print(f"  PROBLEM: {p}")
+    for w in warnings:
+        print(f"  note: {w}")
+    print("This checks the arithmetic and the record's consistency, not that the runs happened.")
+    return 0 if ok and not problems else 2
 
 
 def _challenger(args) -> S.Setup:
@@ -339,6 +406,31 @@ def _challenger(args) -> S.Setup:
     return setup_from(args.challenger, hosts=hosts, key_env=args.key_env)
 
 
+def describe_foreign(record: dict) -> str:
+    """Everything a record would make your machine run: someone else wrote it.
+
+    A public record's command and settings.json hooks run in the sandbox, but
+    with your API key in the environment (moderation review, 2026-10-05).
+    """
+    lines = []
+    for role in ("baseline", "challenger"):
+        spec = record[role]
+        lines.append(f"{role}: {spec['name']} (agent {spec.get('agent', 'claude')}, model {spec.get('model') or 'default'})")
+        for key, label in (("command", "command it runs"), ("settings", "settings.json (hooks run commands)"),
+                           ("append_prompt", "extra system prompt"), ("claude_md", "CLAUDE.md given to the agent"),
+                           ("hosts", "hosts it may reach")):
+            if spec.get(key):
+                value = spec[key] if isinstance(spec[key], str) else ", ".join(spec[key])
+                lines.append(f"  {label}:\n" + "\n".join("    | " + l for l in value.splitlines()))
+    return "\n".join(lines)
+
+
+def _confirm_foreign(record: dict) -> bool:
+    print("This record was written by someone else. It will run, in the sandbox, with your API key:\n")
+    print(describe_foreign(record))
+    return input("\nRun these on your machine? [y/N] ").strip().lower() == "y"
+
+
 def _run(args) -> int:
     from aimpg.replay import cli as replay_cli
     from aimpg.replay import run as runner
@@ -355,6 +447,9 @@ def _run(args) -> int:
         if not prior.get("public"):
             raise VerifyError("only --public records can be rerun (private ones hide which commits were used)")
         baseline, challenger = setup_from_spec(prior["baseline"]), setup_from_spec(prior["challenger"])
+        if not args.trust_record and not _confirm_foreign(prior):
+            print("Stopped. Nothing was run or spent.")
+            return 1
         shas = sorted({r["commit"] for r in prior["runs"]})
         repeats = max(r["repeat"] for r in prior["runs"]) + 1
         task_mode, claim = prior["task_mode"], prior.get("claim", "")
@@ -422,9 +517,10 @@ def _run(args) -> int:
                                         f"{'$%.2f' % r.cost_usd if r.cost_known else '$?':>6}  {r.wall_s:.0f}s"))
     if batch.stopped:
         print(f"STOPPED EARLY: an account can't make calls ({batch.stopped}). Fix it, then rerun with --resume {results}")
-    records, _ = runner.load_results(results)
+    records, excluded = runner.load_results(results)
     record = build_record(records, claim=claim, baseline=baseline, challenger=challenger, repo=str(repo),
-                          task_mode=task_mode, public=args.public if not prior else True)
+                          task_mode=task_mode, public=args.public if not prior else True,
+                          attempts=runner.all_attempts(results), excluded=excluded)
     out = results.with_suffix(".record.json")
     out.write_text(json.dumps(record, indent=1))
     print()

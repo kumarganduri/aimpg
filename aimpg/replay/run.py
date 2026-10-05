@@ -444,6 +444,17 @@ def load_results(path: Path) -> tuple[list[Record], set[str]]:
     return final, excluded
 
 
+def all_attempts(path: Path) -> list[Record]:
+    """Every run line in a results file, including retries and redone runs (for records)."""
+    out = []
+    for line in path.read_text().splitlines():
+        if line.strip():
+            data = json.loads(line)
+            if "excluded_commit" not in data:
+                out.append(Record(**data))
+    return out
+
+
 def make_solution(commit: Commit, dest: Path) -> Path:
     """Tar of the commit's non-test files (fake 'solve' agent only)."""
     tmp = dest.with_suffix(".tree")
