@@ -90,6 +90,48 @@ def sens_rows(comps) -> str:
     return "".join(out)
 
 
+DIFFICULTY_SETUPS = ["claude-code@haiku", "claude-code", "claude-code@opus", "codex@gpt-6.1-sol"]  # RTK left out: it is Sonnet again
+DIFFICULTY_BANDS = [("Easy", "10 to 12 of 12 runs passed", 10, 12), ("In between", "3 to 9", 3, 9), ("Hard", "0 to 2", 0, 2)]
+
+
+def difficulty() -> dict:
+    """Results by how hard each task turned out to be (added 2026-11-14, not pre-registered).
+
+    A task's difficulty is the number of passing runs across the four single-task setups (3 runs each, so 0 to 12).
+    The bands were chosen after seeing the data."""
+    from aimpg.replay import run as runner
+
+    recs = [r for path in sorted((STATE / "runs").glob("*.jsonl")) for r in runner.load_results(path)[0]
+            if r.setup in DIFFICULTY_SETUPS]
+    passed, runs = {}, {}
+    for r in recs:
+        passed[r.commit, r.setup] = passed.get((r.commit, r.setup), 0) + bool(r.passed)
+        runs[r.commit, r.setup] = runs.get((r.commit, r.setup), 0) + 1
+    tasks = sorted({r.commit for r in recs})
+    total = {c: sum(passed.get((c, s), 0) for s in DIFFICULTY_SETUPS) for c in tasks}
+    bands = []
+    for name, rule, lo, hi in DIFFICULTY_BANDS:
+        cs = [c for c in tasks if lo <= total[c] <= hi]
+        bands.append((name, rule, len(cs), [(sum(passed.get((c, s), 0) for c in cs), sum(runs.get((c, s), 0) for c in cs))
+                                            for s in DIFFICULTY_SETUPS]))
+    ever = {s: {c for c in tasks if passed.get((c, s), 0)} for s in DIFFICULTY_SETUPS}
+    failed = {s: [r for r in recs if r.setup == s and not r.passed] for s in DIFFICULTY_SETUPS}
+    mean = lambda xs: sum(xs) / len(xs)
+    return {
+        "tasks": len(tasks), "bands": bands,
+        "sonnet_only": len(ever["claude-code"] - ever["claude-code@haiku"]),
+        "haiku_only": len(ever["claude-code@haiku"] - ever["claude-code"]),
+        "failed": {s: (mean([len(r.usages) for r in failed[s]]), mean([r.wall_s for r in failed[s]])) for s in DIFFICULTY_SETUPS},
+    }
+
+
+def difficulty_rows(d: dict) -> str:
+    return "".join(
+        f'<tr><th scope="row">{html.escape(name)}<small>{html.escape(rule)}</small></th><td class="num">{n}</td>'
+        + "".join(f'<td class="num">{a} of {b}</td>' for a, b in cells) + "</tr>"
+        for name, rule, n, cells in d["bands"])
+
+
 def times(r):
     if r is None:
         return "—"
@@ -182,7 +224,7 @@ def write_data(out: Path, urls: dict) -> int:
     return n
 
 
-def page(report, sel, urls, n_runs: int, total_usd: float, sens: str, haiku: tuple, pilot_usd: float) -> str:
+def page(report, sel, urls, n_runs: int, total_usd: float, sens: str, haiku: tuple, pilot_usd: float, diff: dict) -> str:
     e = html.escape
     rows, charts = [], []
     for c in report:
@@ -207,6 +249,8 @@ def page(report, sel, urls, n_runs: int, total_usd: float, sens: str, haiku: tup
             f'<span class="{"tag found" if found else "tag"}">{"finding" if found else "not shown"}</span>'
             f'<span class="verdict">{e(VERDICT.get(ch, ""))}</span></figcaption>{forest(c, urls)}</figure>')
     repos = ", ".join(f'<a href="{e(r["url"])}">{e(Path(r["path"]).name)}</a>' for r in sel["repos"])
+    hard = diff["bands"][2][3]  # (passed, runs) per setup on the hard tasks
+    diff_head = "".join(f"<th>{e(LABEL.get(s, s))}</th>" for s in DIFFICULTY_SETUPS)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>AI Coding MPG Report No. 1</title>
@@ -312,6 +356,24 @@ finding status:
 </ul>
 <p>All of these are dated in the pre-registration's change and deviation lists.</p>
 
+<h2>Added after publication: results by task difficulty</h2>
+<p><b>Added 2026-11-14. This was not pre-registered, and the groups were chosen after seeing the data.</b> A reader pointed out that cost per
+solved task can flatter a cheap model: if it only solves the tasks every model solves, it looks efficient while never solving a hard one.
+So here are the same runs grouped by how hard each of the {diff["tasks"]} tasks turned out to be, counted as passing runs across four setups
+(3 runs each, so 0 to 12). The groups are made from the same runs they describe, so a hard task has few passes by definition. What the table
+adds is which setups those few passes came from.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Tasks</th><th>How many</th>{diff_head}</tr></thead>
+<tbody>{difficulty_rows(diff)}</tbody></table></div>
+<ul>
+<li><b>Haiku 5.5 against Sonnet 5.5 stands.</b> Sonnet solved {diff["sonnet_only"]} tasks that Haiku never solved, and Haiku solved {diff["haiku_only"]} that Sonnet never did, so they solve almost the same set.
+Haiku isn't cheap because it gives up early either. Its failed runs took more requests and more time than Sonnet's ({diff["failed"]["claude-code@haiku"][0]:.0f} requests and {diff["failed"]["claude-code@haiku"][1]:.0f} seconds, against {diff["failed"]["claude-code"][0]:.0f} and {diff["failed"]["claude-code"][1]:.0f}).</li>
+<li><b>"Opus 5.5 costs 2.6× as much per solved task" hides something.</b> On the hard tasks, Haiku solved {hard[0][0]} of {hard[0][1]} runs, Sonnet {hard[1][0]} of {hard[1][1]}, Opus {hard[2][0]} of {hard[2][1]} and Codex {hard[3][0]} of {hard[3][1]}.
+For those tasks the choice isn't between a cheap and a dear solution. The cheaper models didn't solve them at all.</li>
+<li><b>The task set separates the models poorly.</b> {diff["bands"][0][2]} tasks were easy for every setup and {diff["bands"][2][2]} were too hard for most, which leaves {diff["bands"][1][2]} in between.
+The counts on hard tasks are small, so read them as a pattern to test, not as a measured rate. Report No. 2 will report results by difficulty from the start.</li>
+</ul>
+
 <h2>Check it yourself</h2>
 <ul>
 <li><b>Raw data:</b> <a href="data/">every run record</a> (outcome, tokens per request, cost and time), the selection lists, the pilot runs and <a href="data/report.json">the analysis output</a>.</li>
@@ -348,7 +410,7 @@ def main(out: Path) -> None:
           if d.get("setup") == "claude-code@haiku" and "cost_usd" in d and d.get("outcome") != "account_error"]
     haiku = (len(hk), sum((d.get("extra") or {}).get("agent_reported_cost_usd") or 0 for d in hk), sum(d["cost_usd"] for d in hk))
     pilot_usd = sum(d.get("cost_usd") or 0 for d in records(STATE / "pilot" / "litestar.jsonl"))
-    (out / "index.html").write_text(page(report, sel, urls, n, total, sens_rows(sensitivity()), haiku, pilot_usd))
+    (out / "index.html").write_text(page(report, sel, urls, n, total, sens_rows(sensitivity()), haiku, pilot_usd, difficulty()))
     shutil.copyfile(HERE / "og" / "og.png", out / "og.png")  # link-preview image, made from og/og.html
     print(f"wrote {out / 'index.html'} ({n} run records, ${total:.2f})")
 
