@@ -123,19 +123,25 @@ def rec(commit_, setup, passed, cost=0.1, repeat=0, **extra):
                   passed, "m", cost, 10.0, [[100, 0, 0, 0]], "ok", "", True, "claude", extra)
 
 
-def test_results_by_files_changed_and_by_passes():
+def test_results_by_preset_task_groups_and_by_passes():
     records = []
     for k in range(3):
-        records += [rec("easy", "cheap", True, 0.01, k, files_changed=1), rec("easy", "strong", True, 0.2, k, files_changed=1),
-                    rec("hard", "cheap", False, 0.02, k, files_changed=4), rec("hard", "strong", k == 0, 0.5, k, files_changed=4),
-                    rec("old", "cheap", True, 0.01, k)]  # made before files_changed was recorded
-    one, more = study.by_files(records, ["cheap", "strong"])
-    assert (one[0], one[1]) == ("one file changed", 1) and [(a.solved, a.runs) for a in one[2]] == [(3, 3), (3, 3)]
-    assert (more[0], more[1]) == ("two or more files changed", 1) and [(a.solved, a.runs) for a in more[2]] == [(0, 3), (1, 3)]
+        records += [rec("easy", "cheap", True, 0.01, k, description_words=80, code_lines=30),
+                    rec("easy", "strong", True, 0.2, k, description_words=80, code_lines=30),
+                    rec("hard", "cheap", False, 0.02, k, description_words=14, code_lines=31),
+                    rec("hard", "strong", k == 0, 0.5, k, description_words=14, code_lines=31),
+                    rec("old", "cheap", True, 0.01, k)]  # made before aimpg recorded the task's shape
+    thin, full = study.by_task(records, ["cheap", "strong"], "description")
+    assert (thin[0], thin[1]) == ("under 15 words", 1) and [(a.solved, a.runs) for a in thin[2]] == [(0, 3), (1, 3)]
+    assert (full[0], full[1]) == ("15 words or more", 1) and [(a.solved, a.runs) for a in full[2]] == [(3, 3), (3, 3)]
+    small, large = study.by_task(records, ["cheap", "strong"], "size")  # 30 lines is still small, 31 is large
+    assert (small[1], large[1]) == (1, 1) and [(a.solved, a.runs) for a in large[2]] == [(0, 3), (1, 3)]
+    assert {r.commit for r in study.subset(records, "size", "more than 30")} == {"hard"}
     bands = {label: (n, [(a.solved, a.runs) for a in arms]) for label, n, arms in study.by_passes(records, ["cheap", "strong"])}
     assert bands == {"easy": (2, [(6, 6), (3, 3)]), "hard": (1, [(0, 3), (1, 3)])}
     text = study.render_extras(records, ["cheap", "strong"])
-    assert "| two or more files changed | 1 | 0 of 3 | 1 of 3, $1.50 per solved |" in text and "Exploratory" in text
+    assert "| under 15 words | 1 | 0 of 3 | 1 of 3, $1.50 per solved |" in text
+    assert "| more than 30 | 1 | 0 of 3 | 1 of 3, $1.50 per solved |" in text and "Exploratory" in text
 
 
 def test_how_often_done_is_true():
@@ -225,13 +231,14 @@ def test_study_report_prints_the_group_tables_from_result_files(tmp_path, capsys
                                 "challengers": ["haiku"], "repos": [{"path": str(tmp_path / "repo")}]}))
     runs = tmp_path / "runs"
     runs.mkdir()
-    rows = [rec(c, s, p, 0.1, 0, files_changed=f, claimed="done").__dict__
-            for c, f in (("a" * 40, 1), ("b" * 40, 3)) for s, p in (("claude-code", True), ("claude-code@haiku", f == 1))]
+    rows = [rec(c, s, p, 0.1, 0, description_words=w, code_lines=5, claimed="done").__dict__
+            for c, w in (("a" * 40, 60), ("b" * 40, 8)) for s, p in (("claude-code", True), ("claude-code@haiku", w == 60))]
     (runs / "repo.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     assert main(["study", "report", str(plan), "--runs", str(runs)]) == 0
     out = capsys.readouterr().out
-    assert "| two or more files changed | 1 | 1 of 1, $0.10 per solved | 0 of 1 |" in out
+    assert "| under 15 words | 1 | 1 of 1, $0.10 per solved | 0 of 1 |" in out
     assert "| claude-code@haiku | 2 | 2 | 1 (50%) | 0 | 0 | 0 |" in out
+    assert "Also reported" not in out and "Within tasks" not in out  # only when the plan asks for them
 
 
 def test_a_model_name_can_never_look_like_a_flag():
@@ -239,3 +246,150 @@ def test_a_model_name_can_never_look_like_a_flag():
         with pytest.raises(S.SetupUnavailable):
             S.check_model(bad)
     assert S.check_model("claude-haiku-5-5") == "claude-haiku-5-5" and S.check_model("gpt-6.1-sol") == "gpt-6.1-sol"
+
+
+# ------------------------------------------------------------------ solve rate as a primary measure
+
+def grid(rates, repos=6, commits=8, repeats=3, cost=None):
+    """rates: setup -> share of commits it solves (the same commits every repeat, the first ones in each repo)."""
+    out = []
+    for r in range(repos):
+        for c in range(commits):
+            for s, rate in rates.items():
+                for k in range(repeats):
+                    out.append(Record(f"{r}-{c}-{s}-{k}", f"repo{r}", f"r{r}c{c}", s, k, "passed" if c < rate * commits else "tests_failed",
+                                      c < rate * commits, "m", (cost or {}).get(s, 0.1), 10.0, [[100, 0, 0, 0]], "ok", "", True, "claude",
+                                      {"description_words": 5 if c % 2 else 50, "code_lines": 10}))
+    return out
+
+
+def test_a_higher_solve_rate_is_a_headline_only_on_the_solve_rate_measure():
+    records = grid({"cheap": 0.25, "planner": 0.75})
+    c = study.compare(records, "cheap", "planner", primary="solved")
+    study.holm([c])
+    assert c.ratio_solved == pytest.approx(3.0) and c.ratio_solved_ci[0] > 1
+    assert (c.cheaper_in_repos, c.higher_in_repos) == (0, 6) and c.headline
+    assert "| solve rate |" in study.render([c]) and "+200%" in study.render([c]) and "(higher in 6)" in study.render([c])
+    same = study.compare(grid({"cheap": 0.5, "planner": 0.5}), "cheap", "planner", primary="solved")
+    study.holm([same])
+    assert (same.cheaper_in_repos, same.higher_in_repos) == (0, 0) and not same.headline  # ties are neither
+
+
+def test_solve_rates_compare_even_when_the_baseline_solved_nothing():
+    c = study.compare(grid({"cheap": 0.0, "planner": 0.5}), "cheap", "planner", primary="solved")
+    study.holm([c])
+    assert c.ratio_solved is None and c.higher_in_repos == 6  # no ratio to a zero rate, but the direction is clear
+    assert not c.headline  # and without an interval it is never a headline
+
+
+def test_plan_comparisons_between_any_two_setups_with_secondary_ones_and_groups(tmp_path, capsys, monkeypatch):
+    from aimpg.cli import main
+
+    monkeypatch.setattr(sandbox, "unavailable_reason", lambda: None)
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({
+        "name": "r2", "cutoff": "2026-07-01", "commits_per_repo": 8, "repeats": 3, "baseline": "plain",
+        "challengers": ["haiku", "opus", "planner:opus+haiku"], "repos": [{"path": str(tmp_path / "repo")}],
+        "comparisons": [{"challenger": "planner:opus+haiku", "baseline": "plain", "primary": "per_solved"},
+                        {"challenger": "planner:opus+haiku", "baseline": "haiku", "primary": "solved"}],
+        "also": [{"challenger": "haiku", "baseline": "plain"}]}))
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    records = grid({"claude-code": 0.5, "claude-code@haiku": 0.25, "claude-code@opus": 0.75, "planner@opus+haiku": 0.75},
+                   cost={"claude-code": 0.1, "claude-code@haiku": 0.02, "claude-code@opus": 0.3, "planner@opus+haiku": 0.06})
+    (runs / "all.jsonl").write_text("".join(json.dumps(r.__dict__) + "\n" for r in records))
+    assert main(["study", "report", str(plan), "--runs", str(runs)]) == 0
+    out = capsys.readouterr().out
+    head, _, rest = out.partition("Also reported (not primary comparisons; never a headline):")
+    assert "| planner@opus+haiku vs claude-code | per solved |" in head and "| planner@opus+haiku vs claude-code@haiku | solve rate |" in head
+    assert "claude-code@opus vs" not in head  # not asked for, so not compared
+    assert head.count("| yes |") == 2
+    assert "| claude-code@haiku vs claude-code | per solved |" in rest
+    assert "Within tasks with under 15 words (24 tasks; never a headline):" in rest
+    assert "Within tasks with 30 or fewer changed lines of code (48 tasks; never a headline):" in rest
+    assert "| yes |" not in rest  # nothing outside the primary comparisons is ever a headline
+    bad = json.loads(plan.read_text())
+    bad["comparisons"][0]["primary"] = "vibes"
+    plan.write_text(json.dumps(bad))
+    with pytest.raises(SystemExit, match="primary must be one of"):
+        main(["study", "report", str(plan), "--runs", str(runs)])
+
+
+# ------------------------------------------------------------------ a study's own tasks
+
+def test_description_length_and_changed_lines_come_from_the_commit_alone(tmp_path):
+    from gitrepo import Repo, days_ago
+
+    from aimpg.replay import workspace
+
+    r = Repo(tmp_path / "repo")
+    r.commit({"calc.py": "x = 1\ny = 1\n", "tests/test_calc.py": "def test(): ...\n", "logo.bin": "a"}, "base", when=days_ago(9))
+    (r.path / "logo.bin").write_bytes(b"\x00\x01\x02")
+    r.git("add", "logo.bin")
+    sha = r.commit({"calc.py": "x = 2\ny = 1\nz = 3\n", "util.py": "a = 1\n", "tests/test_calc.py": "def test(): 1\ndef test2(): 2\n"},
+                   "change x to two and add z and a helper", when=days_ago(5))
+    (c,), _ = select.candidates(str(r.path), days_ago(30), days_ago(20), any_author=True)
+    assert c.sha == sha and c.code_lines == 4  # calc.py: 1 removed + 2 added; util.py: 1 added; tests and the binary file don't count
+    assert c.words == 10 and select.commit_at(str(r.path), sha).code_lines == 4
+    assert workspace.code_lines(str(r.path), c.parent, c.sha) == 4
+    select.save([c], tmp_path / "selected.jsonl")
+    assert select.load(tmp_path / "selected.jsonl")[0].code_lines == 4
+    none, skipped = select.candidates(str(r.path), days_ago(30), days_ago(20), any_author=True, exclude={sha})
+    assert none == [] and skipped["used in an earlier study"] == 1
+
+
+def test_a_selection_saved_before_code_lines_still_loads(tmp_path):
+    old = {"repo": "/r", "sha": "a" * 40, "parent": "p", "subject": "fix the thing", "body": "", "test_files": ["t.py"], "code_files": ["a.py"]}
+    (tmp_path / "selected.jsonl").write_text(json.dumps(old) + "\n")
+    (c,) = select.load(tmp_path / "selected.jsonl")
+    assert c.code_lines == -1 and c.words == 3
+
+
+def test_a_study_that_excludes_commits_keeps_its_own_selection(tmp_path, monkeypatch, capsys):
+    from aimpg.replay import study_cli
+
+    monkeypatch.setattr(study_cli, "STATE", tmp_path / "study")
+    monkeypatch.setattr(replay_cli, "STATE", tmp_path / "replay")
+    repo = tmp_path / "repos" / "calc"
+    repo.mkdir(parents=True)
+    used = [commit(i, repo=str(repo)) for i in (1, 2)]
+    fresh = [commit(i, repo=str(repo)) for i in (3, 4, 5)]
+    select.save(used + fresh[:1], replay_cli._state(repo) / "selected.jsonl")  # an earlier study's selection of this repo
+    plan = {"name": "r2", "repos": [{"path": str(repo)}], "exclude_commits": [c.sha for c in used]}
+    assert study_cli._sel_dir(plan, str(repo)) == tmp_path / "study" / "r2" / "selection" / "calc"
+    assert study_cli._sel_dir({"name": "r1", "repos": []}, str(repo)) == replay_cli._state(repo)  # without it: as before
+    with pytest.raises(SystemExit, match="run `aimpg study select` first"):
+        study_cli._selected(plan, str(repo), 2)  # the earlier study's selection is not picked up
+    select.save(used[:1] + fresh, study_cli._sel_dir(plan, str(repo)) / "selected.jsonl")
+    assert [int(c.sha) for c in study_cli._selected(plan, str(repo), 2)] == [3, 4]  # an excluded commit never runs
+    assert study_cli._qualified(plan, str(repo)) == 4
+    with pytest.raises(SystemExit, match="full commit ids"):
+        study_cli._excluded({"exclude_commits": ["abc123"]})
+    twin = {"name": "r3", "exclude_commits": [], "repos": [{"path": str(repo)}, {"path": str(tmp_path / "other" / "calc")}]}
+    with pytest.raises(SystemExit, match="different names"):
+        study_cli._sel_dir(twin, str(repo))
+
+
+def test_study_select_passes_the_exclusions_and_its_own_folder_on(tmp_path, monkeypatch, capsys):
+    from aimpg.replay import study_cli
+
+    monkeypatch.setattr(study_cli, "STATE", tmp_path / "study")
+    repo = tmp_path / "calc"
+    repo.mkdir()
+    seen = {}
+
+    def fake_select(path, args):
+        seen.update(exclude=set(args.exclude), state_dir=args.state_dir, max=args.max)
+        select.save([commit(i, repo=str(repo)) for i in range(3, 9)], args.state_dir / "selected.jsonl")
+        (args.state_dir / "selected.manifest.json").write_text("{}")
+        return 0
+
+    monkeypatch.setattr(study_cli, "_select", fake_select)
+    plan = {"name": "r2", "cutoff": "2026-07-01", "commits_per_repo": 3, "repos": [{"path": str(repo), "url": "u"}],
+            "exclude_commits": ["a" * 40]}
+    assert study_cli._select_all(plan) == 0
+    assert seen == {"exclude": {"a" * 40}, "state_dir": tmp_path / "study" / "r2" / "selection" / "calc", "max": 6}
+    summary = json.loads((tmp_path / "study" / "r2" / "selection.json").read_text())
+    assert summary["repos"] == [{"path": str(repo), "url": "u", "qualifying": 6}]
+    assert study_cli._select_all(plan) == 0 and "already selected: 6 qualifying" in capsys.readouterr().out
+

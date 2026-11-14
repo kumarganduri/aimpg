@@ -78,9 +78,12 @@ class Comparison:
     per_repo: dict[str, dict] = field(default_factory=dict)
     p_holm: float | None = None
     headline: bool = False
-    primary: str = "per_solved"  # per_solved | tokens | per_attempt
+    primary: str = "per_solved"  # per_solved | tokens | per_attempt | solved
     ratio_per_attempt: float | None = None
     ratio_per_attempt_ci: tuple[float, float] | None = None
+    ratio_solved: float | None = None  # challenger's solve rate / baseline's
+    ratio_solved_ci: tuple[float, float] | None = None
+    higher_in_repos: int = 0  # repos where the challenger came out higher on the primary metric (ties are neither)
 
 
 def _group(records: list[Record]) -> dict[str, dict[str, list[Record]]]:
@@ -91,7 +94,7 @@ def _group(records: list[Record]) -> dict[str, dict[str, list[Record]]]:
     return out
 
 
-def _ratios(groups, baseline: str, challenger: str) -> tuple[float | None, float | None, float | None]:
+def _ratios(groups, baseline: str, challenger: str) -> tuple[float | None, float | None, float | None, float | None]:
     sums = {s: [0.0, 0, 0] for s in (baseline, challenger)}  # usd, solved, tokens
     for commits in groups:
         for runs in commits:
@@ -106,10 +109,11 @@ def _ratios(groups, baseline: str, challenger: str) -> tuple[float | None, float
     n_c = sum(1 for g in groups for runs in g for r in runs if r.setup == challenger)
     tokens = (c[2] / n_c) / (b[2] / n_b) if n_b and n_c and b[2] else None
     per_attempt = (c[0] / n_c) / (b[0] / n_b) if n_b and n_c and b[0] else None
-    return per_solved, tokens, per_attempt
+    solved = (c[1] / n_c) / (b[1] / n_b) if n_b and n_c and b[1] else None
+    return per_solved, tokens, per_attempt, solved
 
 
-METRICS = ("per_solved", "tokens", "per_attempt")
+METRICS = ("per_solved", "tokens", "per_attempt", "solved")
 
 
 def compare(records: list[Record], baseline: str, challenger: str, *, seed: int = 0, primary: str = "per_solved") -> Comparison:
@@ -131,16 +135,18 @@ def compare(records: list[Record], baseline: str, challenger: str, *, seed: int 
         a.usd += r.cost_usd
         a.tokens += _tokens(r)
     groups = [list(commits.values()) for commits in by_repo.values()]
-    point, tok_point, att_point = _ratios(groups, baseline, challenger)
+    point, tok_point, att_point, sol_point = _ratios(groups, baseline, challenger)
 
     rng = random.Random(seed)
-    boot, boot_tok, boot_att = [], [], []
+    boot, boot_tok, boot_att, boot_sol = [], [], [], []
     for _ in range(BOOTSTRAP if groups else 0):
         sample = []
         for _ in groups:  # resample repos, then commits within each
             g = groups[rng.randrange(len(groups))]
             sample.append([g[rng.randrange(len(g))] for _ in g])
-        r, t, a = _ratios(sample, baseline, challenger)
+        r, t, a, s = _ratios(sample, baseline, challenger)
+        if s is not None:
+            boot_sol.append(s)
         if r is not None:
             boot.append(r)
         if t is not None:
@@ -155,27 +161,34 @@ def compare(records: list[Record], baseline: str, challenger: str, *, seed: int 
         return (xs[int(0.025 * (len(xs) - 1))], xs[int(0.975 * (len(xs) - 1))])
 
     idx = METRICS.index(primary)
-    p_point, p_boot = (point, tok_point, att_point)[idx], (boot, boot_tok, boot_att)[idx]
+    p_point, p_boot = (point, tok_point, att_point, sol_point)[idx], (boot, boot_tok, boot_att, boot_sol)[idx]
     p = None
     if p_boot and p_point is not None:
         below = sum(1 for x in p_boot if x < 1) / len(p_boot)
         p = min(1.0, 2 * min(below, 1 - below))
 
-    per_repo, cheaper = {}, 0
+    per_repo, cheaper, higher = {}, 0, 0
     for repo, commits in by_repo.items():
-        r, t, a = _ratios([list(commits.values())], baseline, challenger)
-        primary_ratio = (r, t, a)[idx]
-        k = {s: sum(x.passed for runs in commits.values() for x in runs if x.setup == s) for s in arms}
-        n = {s: sum(1 for runs in commits.values() for x in runs if x.setup == s) for s in arms}
-        per_repo[repo] = {"ratio_per_solved": r, "ratio_tokens": t, "ratio_per_attempt": a, "solved": k, "runs": n,
+        r, t, a, s = _ratios([list(commits.values())], baseline, challenger)
+        primary_ratio = (r, t, a, s)[idx]
+        k = {s_: sum(x.passed for runs in commits.values() for x in runs if x.setup == s_) for s_ in arms}
+        n = {s_: sum(1 for runs in commits.values() for x in runs if x.setup == s_) for s_ in arms}
+        per_repo[repo] = {"ratio_per_solved": r, "ratio_tokens": t, "ratio_per_attempt": a, "ratio_solved": s, "solved": k, "runs": n,
                           "commits": len(commits)}
-        cheaper += primary_ratio is not None and primary_ratio < 1
+        if primary == "solved":  # solve rates compare even when one side solved nothing; a tie is neither
+            rates = {s_: k[s_] / n[s_] if n[s_] else 0.0 for s_ in arms}
+            cheaper += rates[challenger] < rates[baseline]
+            higher += rates[challenger] > rates[baseline]
+        else:
+            cheaper += primary_ratio is not None and primary_ratio < 1
     return Comparison(
         baseline, challenger, len(by_repo), sum(len(c) for c in by_repo.values()), arms,
         {s: wilson(a.solved, a.runs) for s, a in arms.items()},
         {s: a.usd / a.runs if a.runs else 0.0 for s, a in arms.items()},
         point, ci(boot), tok_point, ci(boot_tok), p, cheaper, per_repo,
         primary=primary, ratio_per_attempt=att_point, ratio_per_attempt_ci=ci(boot_att),
+        ratio_solved=sol_point, ratio_solved_ci=ci(boot_sol),
+        higher_in_repos=higher if primary == "solved" else len(by_repo) - cheaper,
     )
 
 
@@ -188,9 +201,16 @@ def holm(comparisons: list[Comparison], *, alpha: float = 0.05) -> None:
         c.p_holm = running
     for c in comparisons:
         need = 5 if c.repos >= 6 else c.repos + 1  # pre-registered: >= 6 repos, direction holding in >= 5 (pilot caught 1 repo passing)
-        ratio = {"per_solved": c.ratio_per_solved, "tokens": c.ratio_tokens, "per_attempt": c.ratio_per_attempt}[c.primary]
-        direction = c.cheaper_in_repos if (ratio or 1) < 1 else c.repos - c.cheaper_in_repos
+        ratio = {"per_solved": c.ratio_per_solved, "tokens": c.ratio_tokens, "per_attempt": c.ratio_per_attempt,
+                 "solved": c.ratio_solved}[c.primary]
+        if c.primary == "solved":
+            direction = c.cheaper_in_repos if (ratio or 1) < 1 else c.higher_in_repos
+        else:
+            direction = c.cheaper_in_repos if (ratio or 1) < 1 else c.repos - c.cheaper_in_repos
         c.headline = bool(c.p_holm is not None and c.p_holm < alpha and c.repos and direction >= need)
+
+
+PRIMARY_NAMES = {"per_solved": "per solved", "tokens": "tokens", "per_attempt": "per attempt", "solved": "solve rate"}
 
 
 def render(comparisons: list[Comparison]) -> str:
@@ -206,18 +226,23 @@ def render(comparisons: list[Comparison]) -> str:
         tc = c.ratio_tokens_ci
         ac = c.ratio_per_attempt_ci
         lines.append(
-            f"| {c.challenger} vs {c.baseline} | {c.primary.replace('_', ' ')} | {c.repos} · {c.commits} | {ch.solve_rate:.0%} ({lo:.0%}–{hi:.0%}) vs {b.solve_rate:.0%} "
+            f"| {c.challenger} vs {c.baseline} | {PRIMARY_NAMES[c.primary]} | {c.repos} · {c.commits} | {ch.solve_rate:.0%} ({lo:.0%}–{hi:.0%}) vs {b.solve_rate:.0%}"
+            + (f", {pct(c.ratio_solved)} ({pct(c.ratio_solved_ci[0]) if c.ratio_solved_ci else '—'} to {pct(c.ratio_solved_ci[1]) if c.ratio_solved_ci else '—'}) "
+               if c.primary == "solved" else " ") +
             f"| ${c.cost_per_attempt[c.challenger]:.2f} vs ${c.cost_per_attempt[c.baseline]:.2f}, {pct(c.ratio_per_attempt)} ({pct(ac[0]) if ac else '—'} to {pct(ac[1]) if ac else '—'}) "
             f"| {pct(c.ratio_per_solved)} ({pct(rc[0]) if rc else '—'} to {pct(rc[1]) if rc else '—'}) "
             f"| {pct(c.ratio_tokens)} ({pct(tc[0]) if tc else '—'} to {pct(tc[1]) if tc else '—'}) "
             f"| {c.cheaper_in_repos} of {c.repos} repos | {'yes' if c.headline else 'no'} |")
+        if c.primary == "solved":
+            lines[-1] = lines[-1].replace(f"| {c.cheaper_in_repos} of {c.repos} repos |",
+                                          f"| {c.cheaper_in_repos} of {c.repos} repos (higher in {c.higher_in_repos}) |")
     lines += ["", "Intervals: 95%, bootstrap over repos then commits. Headline = Holm-adjusted p < 0.05 on the pre-registered primary metric, and its direction holds in ≥5 of 6+ repos."]
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------- beyond the primary comparisons
 # Report No. 1 showed that one cost-per-solved number can hide which tasks a setup solves at all.
-# These tables read the same records by group. `by_files` uses a rule fixed before any run; `by_passes`
+# These tables read the same records by group. `by_task` uses rules fixed before any run; `by_passes`
 # groups tasks by the results themselves and is exploratory.
 
 PASS_BANDS = (("easy", 5 / 6), ("in between", 1 / 4), ("hard", 0.0))  # by the share of passing runs across the setups
@@ -238,16 +263,33 @@ def _cells(records: list[Record], setups: list[str], tasks: set) -> list[Arm]:
     return [arms[s] for s in setups]
 
 
-def by_files(records: list[Record], setups: list[str]) -> list[tuple[str, int, list[Arm]]]:
-    """Results by the pre-set difficulty rule: did the original commit change one non-test file, or more?
-    Runs without `files_changed` (made before aimpg recorded it) are left out."""
-    mine = [r for r in _single(records, setups) if isinstance(r.extra.get("files_changed"), int)]
+WORDS_SPLIT = 15  # a description shorter than this many words is "thin"
+LINES_SPLIT = 30  # an original commit that changed more than this many lines of code is "large"
+TASK_GROUPS = {  # fixed before any run, from the original commit alone; Report No. 1 suggested both (see its page)
+    "description": ("description_words", (("under 15 words", lambda n: n < WORDS_SPLIT), ("15 words or more", lambda n: n >= WORDS_SPLIT))),
+    "size": ("code_lines", (("30 or fewer changed lines of code", lambda n: n <= LINES_SPLIT), ("more than 30", lambda n: n > LINES_SPLIT))),
+}
+
+
+def by_task(records: list[Record], setups: list[str], group: str) -> list[tuple[str, int, list[Arm]]]:
+    """Results by a pre-set task group: `description` (how long the task's description is) or `size`
+    (how many lines of code the original commit changed). Runs that don't carry the measurement
+    (made before aimpg recorded it) are left out."""
+    field_, bands = TASK_GROUPS[group]
+    mine = [r for r in _single(records, setups) if isinstance(r.extra.get(field_), int)]
     out = []
-    for label, test in (("one file changed", lambda n: n <= 1), ("two or more files changed", lambda n: n >= 2)):
-        tasks = {(r.repo, r.commit) for r in mine if test(r.extra["files_changed"])}
+    for label, test in bands:
+        tasks = {(r.repo, r.commit) for r in mine if test(r.extra[field_])}
         if tasks:
             out.append((label, len(tasks), _cells(mine, setups, tasks)))
     return out
+
+
+def subset(records: list[Record], group: str, label: str) -> list[Record]:
+    """The records of one task group (for a comparison within it)."""
+    field_, bands = TASK_GROUPS[group]
+    test = dict(bands)[label]
+    return [r for r in records if isinstance(r.extra.get(field_), int) and test(r.extra[field_])]
 
 
 def by_passes(records: list[Record], setups: list[str]) -> list[tuple[str, int, list[Arm]]]:
@@ -316,9 +358,11 @@ def render_groups(title: str, groups: list[tuple[str, int, list[Arm]]], setups: 
 def render_extras(records: list[Record], setups: list[str]) -> str:
     """The group tables and the claim and delegation counts, for whatever the records hold."""
     parts = []
-    files = by_files(records, setups)
-    if files:
-        parts.append(render_groups("Solved runs by how many files the original commit changed (the pre-set difficulty rule):", files, setups))
+    for group, title in (("description", "Solved runs by the length of the task's description (pre-set group):"),
+                         ("size", "Solved runs by how much code the original commit changed (pre-set group):")):
+        rows = by_task(records, setups, group)
+        if rows:
+            parts.append(render_groups(title, rows, setups))
     passes = by_passes(records, setups)
     if passes:
         parts.append(render_groups("Exploratory: solved runs by how hard each task turned out (share of passing runs across these setups: "

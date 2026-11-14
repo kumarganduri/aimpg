@@ -94,7 +94,27 @@ DIFFICULTY_SETUPS = ["claude-code@haiku", "claude-code", "claude-code@opus", "co
 DIFFICULTY_BANDS = [("Easy", "10 to 12 of 12 runs passed", 10, 12), ("In between", "3 to 9", 3, 9), ("Hard", "0 to 2", 0, 2)]
 
 
-def difficulty() -> dict:
+def tasks(urls: dict) -> list[dict]:
+    """What each task looked like before any run: how long its description (the commit message) is and
+    how much code the original commit changed. Read from this machine's selection and repo clones;
+    published as data/tasks.json so the grouping below can be checked."""
+    from aimpg.replay import run as runner, select, workspace
+    from aimpg.replay.cli import _state
+
+    used = {r.commit for path in sorted((STATE / "runs").glob("*.jsonl")) for r in runner.load_results(path)[0]}
+    out = []
+    for local, url in urls.items():
+        for c in select.load(_state(Path(local)) / "selected.jsonl"):
+            if c.sha in used:
+                out.append({"repo": url, "commit": c.sha, "description_words": c.words,
+                            "code_lines": workspace.code_lines(local, c.parent, c.sha), "code_files": len(c.code_files)})
+    return sorted(out, key=lambda d: (d["repo"], d["commit"]))
+
+
+DESCRIPTION_BANDS = [("50 words or more", lambda n: n >= 50), ("15 to 49 words", lambda n: 15 <= n < 50), ("under 15 words", lambda n: n < 15)]
+
+
+def difficulty(task_list: list[dict]) -> dict:
     """Results by how hard each task turned out to be (added 2026-11-14, not pre-registered).
 
     A task's difficulty is the number of passing runs across the four single-task setups (3 runs each, so 0 to 12).
@@ -117,7 +137,17 @@ def difficulty() -> dict:
     ever = {s: {c for c in tasks if passed.get((c, s), 0)} for s in DIFFICULTY_SETUPS}
     failed = {s: [r for r in recs if r.setup == s and not r.passed] for s in DIFFICULTY_SETUPS}
     mean = lambda xs: sum(xs) / len(xs)
+    from statistics import median
+
+    words = {d["commit"]: d["description_words"] for d in task_list}
+    by_words = []
+    for label, test in DESCRIPTION_BANDS:
+        cs = [c for c in tasks if test(words[c])]
+        by_words.append((label, len(cs), [(sum(passed.get((c, s), 0) for c in cs), sum(runs.get((c, s), 0) for c in cs))
+                                          for s in DIFFICULTY_SETUPS]))
     return {
+        "median_words": [median(words[c] for c in tasks if lo <= total[c] <= hi) for _, _, lo, hi in DIFFICULTY_BANDS],
+        "by_words": by_words,
         "tasks": len(tasks), "bands": bands,
         "sonnet_only": len(ever["claude-code"] - ever["claude-code@haiku"]),
         "haiku_only": len(ever["claude-code@haiku"] - ever["claude-code"]),
@@ -167,7 +197,7 @@ def forest(c, urls) -> str:
     return "".join(parts)
 
 
-def write_data(out: Path, urls: dict) -> int:
+def write_data(out: Path, urls: dict, task_list: list[dict]) -> int:
     data = out / "data"
     if data.exists():
         shutil.rmtree(data)
@@ -197,6 +227,7 @@ def write_data(out: Path, urls: dict) -> int:
             text = text.replace(local, url)
         (data / "pilot").mkdir()
         (data / "pilot" / pilot.name).write_text(text)
+    (data / "tasks.json").write_text(json.dumps(task_list, indent=1) + "\n")
     shutil.copy(HERE / "plan.json", data / "plan.json")
     shutil.copytree(HERE / "selection", data / "selection")
     shutil.copy(HERE / "selection.json", data / "selection.json")
@@ -250,6 +281,7 @@ def page(report, sel, urls, n_runs: int, total_usd: float, sens: str, haiku: tup
             f'<span class="verdict">{e(VERDICT.get(ch, ""))}</span></figcaption>{forest(c, urls)}</figure>')
     repos = ", ".join(f'<a href="{e(r["url"])}">{e(Path(r["path"]).name)}</a>' for r in sel["repos"])
     hard = diff["bands"][2][3]  # (passed, runs) per setup on the hard tasks
+    long, short = diff["by_words"][0][2], diff["by_words"][2][2]  # the same, for long and for short descriptions
     diff_head = "".join(f"<th>{e(LABEL.get(s, s))}</th>" for s in DIFFICULTY_SETUPS)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -370,6 +402,11 @@ adds is which setups those few passes came from.</p>
 Haiku isn't cheap because it gives up early either. Its failed runs took more requests and more time than Sonnet's ({diff["failed"]["claude-code@haiku"][0]:.0f} requests and {diff["failed"]["claude-code@haiku"][1]:.0f} seconds, against {diff["failed"]["claude-code"][0]:.0f} and {diff["failed"]["claude-code"][1]:.0f}).</li>
 <li><b>"Opus 5.5 costs 2.6× as much per solved task" hides something.</b> On the hard tasks, Haiku solved {hard[0][0]} of {hard[0][1]} runs, Sonnet {hard[1][0]} of {hard[1][1]}, Opus {hard[2][0]} of {hard[2][1]} and Codex {hard[3][0]} of {hard[3][1]}.
 For those tasks the choice isn't between a cheap and a dear solution. The cheaper models didn't solve them at all.</li>
+<li><b>"Hard" here partly means thinly described</b> (added later the same day). The task an agent gets is the commit message. The hard tasks'
+messages had a median of {diff["median_words"][2]:g} words, and the easy ones {diff["median_words"][0]:g}. Tasks described in 50 words or more were solved in
+{long[0][0]} of {long[0][1]} runs by Haiku, {long[1][0]} of {long[1][1]} by Sonnet and {long[2][0]} of {long[2][1]} by Opus. Tasks described in under 15 words were solved in
+{short[0][0]} of {short[0][1]}, {short[1][0]} of {short[1][1]} and {short[2][0]} of {short[2][1]}. So part of what the hard tasks test is working out what is wanted from very little, and that
+is where Opus pulled ahead. Each task's description length and size are in <a href="data/tasks.json">data/tasks.json</a>.</li>
 <li><b>The task set separates the models poorly.</b> {diff["bands"][0][2]} tasks were easy for every setup and {diff["bands"][2][2]} were too hard for most, which leaves {diff["bands"][1][2]} in between.
 The counts on hard tasks are small, so read them as a pattern to test, not as a measured rate. Report No. 2 will report results by difficulty from the start.</li>
 </ul>
@@ -399,7 +436,8 @@ The counts on hard tasks are small, so read them as a pattern to test, not as a 
 def main(out: Path) -> None:
     report, sel, urls = load()
     out.mkdir(parents=True, exist_ok=True)
-    n = write_data(out, urls)
+    task_list = tasks(urls)
+    n = write_data(out, urls, task_list)
     total = 0.0
     for path in (STATE / "runs").glob("*.jsonl"):
         for line in path.read_text().splitlines():
@@ -410,7 +448,7 @@ def main(out: Path) -> None:
           if d.get("setup") == "claude-code@haiku" and "cost_usd" in d and d.get("outcome") != "account_error"]
     haiku = (len(hk), sum((d.get("extra") or {}).get("agent_reported_cost_usd") or 0 for d in hk), sum(d["cost_usd"] for d in hk))
     pilot_usd = sum(d.get("cost_usd") or 0 for d in records(STATE / "pilot" / "litestar.jsonl"))
-    (out / "index.html").write_text(page(report, sel, urls, n, total, sens_rows(sensitivity()), haiku, pilot_usd, difficulty()))
+    (out / "index.html").write_text(page(report, sel, urls, n, total, sens_rows(sensitivity()), haiku, pilot_usd, difficulty(task_list)))
     shutil.copyfile(HERE / "og" / "og.png", out / "og.png")  # link-preview image, made from og/og.html
     print(f"wrote {out / 'index.html'} ({n} run records, ${total:.2f})")
 

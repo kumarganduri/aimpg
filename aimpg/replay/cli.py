@@ -127,7 +127,8 @@ def _unsandboxable() -> bool:
 def _select(repo: Path, args) -> int:
     cutoff = datetime.strptime(args.cutoff, "%Y-%m-%d").timestamp()
     any_author = getattr(args, "any_author", False)
-    commits, skipped = select.candidates(str(repo), time.time() - args.days * DAY, cutoff, any_author=any_author)
+    commits, skipped = select.candidates(str(repo), time.time() - args.days * DAY, cutoff, any_author=any_author,
+                                         exclude=frozenset(getattr(args, "exclude", ()) or ()))
     print(f"{len(commits)} candidates after cheap filters; skipped: {skipped or 'none'}")
     layout = Layout(secure_root())
     good, setup_failures = [], 0
@@ -152,7 +153,8 @@ def _select(repo: Path, args) -> int:
                 if setup_failures >= SETUP_GIVE_UP:
                     print(f"  The first {SETUP_GIVE_UP} commits all fail to install here: giving up on this repo.")
                     break
-    out = _state(repo) / "selected.jsonl"
+    out = (getattr(args, "state_dir", None) or _state(repo)) / "selected.jsonl"  # a study can keep its own selection
+    out.parent.mkdir(parents=True, exist_ok=True)
     select.save(good, out)
     if multi_min:  # every candidate looked at, including the ones after the last qualifying commit
         checked = commits[: commits.index(last_seen) + 1] if last_seen is not None else commits

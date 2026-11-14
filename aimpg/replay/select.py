@@ -24,10 +24,12 @@ from aimpg.replay.workspace import TEST_FILE, Commit, Layout, Precheck, Workspac
 MIN_WORDS = 6
 
 
-def candidates(repo: str, since: float, cutoff: float, *, any_author: bool = False) -> tuple[list[Commit], dict[str, int]]:
+def candidates(repo: str, since: float, cutoff: float, *, any_author: bool = False,
+               exclude: frozenset[str] | set[str] = frozenset()) -> tuple[list[Commit], dict[str, int]]:
     """Cheap filters (no installs, no test runs). Returns (commits oldest first, skip counts by reason).
 
     any_author: include everyone's commits (studies on public repos); by default only yours.
+    exclude: commit ids to leave out (a study that must not reuse an earlier study's tasks).
     """
     me = user_email(repo)
     skipped: dict[str, int] = {}
@@ -39,7 +41,9 @@ def candidates(repo: str, since: float, cutoff: float, *, any_author: bool = Fal
     for c in load_commits(repo, since, reflog=False):
         tests = sorted(f for f in c.files if TEST_FILE.search(f))
         code = sorted(f for f in c.files if not TEST_FILE.search(f))
-        if not any_author and c.author_email != me:
+        if c.sha in exclude:
+            skip("used in an earlier study")
+        elif not any_author and c.author_email != me:
             skip("not yours")
         elif c.ts < cutoff or _authored(repo, c.sha) < cutoff:  # c.ts is the committer date; a rebase renews only that
             skip("before model training cutoff")
@@ -53,7 +57,8 @@ def candidates(repo: str, since: float, cutoff: float, *, any_author: bool = Fal
             elif len(subject.split()) + len(body.split()) < MIN_WORDS:
                 skip("message too short")
             else:
-                out.append(Commit(repo, c.sha, parents[0], subject, body, tests, code, ts=c.ts))
+                out.append(Commit(repo, c.sha, parents[0], subject, body, tests, code, ts=c.ts,
+                                  code_lines=workspace.code_lines(repo, parents[0], c.sha)))
     out.sort(key=lambda c: c.ts)  # oldest first, so "the first N after the cutoff" is well defined
     return out, skipped
 
@@ -107,7 +112,8 @@ def commit_at(repo: str, sha: str) -> Commit:
     subject, body = _message(repo, sha)
     ts = float(workspace.git(repo, "log", "-1", "--format=%ct", "--end-of-options", sha).decode().strip())
     tests = sorted(f for f in files if TEST_FILE.search(f))
-    return Commit(repo, sha, parents[0], subject, body, tests, sorted(set(files) - set(tests)), ts=ts)
+    return Commit(repo, sha, parents[0], subject, body, tests, sorted(set(files) - set(tests)), ts=ts,
+                  code_lines=workspace.code_lines(repo, parents[0], sha))
 
 
 def _authored(repo: str, sha: str) -> float:
