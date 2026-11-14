@@ -213,3 +213,128 @@ def render(comparisons: list[Comparison]) -> str:
             f"| {c.cheaper_in_repos} of {c.repos} repos | {'yes' if c.headline else 'no'} |")
     lines += ["", "Intervals: 95%, bootstrap over repos then commits. Headline = Holm-adjusted p < 0.05 on the pre-registered primary metric, and its direction holds in ≥5 of 6+ repos."]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- beyond the primary comparisons
+# Report No. 1 showed that one cost-per-solved number can hide which tasks a setup solves at all.
+# These tables read the same records by group. `by_files` uses a rule fixed before any run; `by_passes`
+# groups tasks by the results themselves and is exploratory.
+
+PASS_BANDS = (("easy", 5 / 6), ("in between", 1 / 4), ("hard", 0.0))  # by the share of passing runs across the setups
+
+
+def _single(records: list[Record], setups: list[str]) -> list[Record]:
+    return [r for r in records if r.setup in setups]
+
+
+def _cells(records: list[Record], setups: list[str], tasks: set) -> list[Arm]:
+    arms = {s: Arm(s) for s in setups}
+    for r in records:
+        if (r.repo, r.commit) in tasks:
+            a = arms[r.setup]
+            a.runs += 1
+            a.solved += r.passed
+            a.usd += r.cost_usd
+    return [arms[s] for s in setups]
+
+
+def by_files(records: list[Record], setups: list[str]) -> list[tuple[str, int, list[Arm]]]:
+    """Results by the pre-set difficulty rule: did the original commit change one non-test file, or more?
+    Runs without `files_changed` (made before aimpg recorded it) are left out."""
+    mine = [r for r in _single(records, setups) if isinstance(r.extra.get("files_changed"), int)]
+    out = []
+    for label, test in (("one file changed", lambda n: n <= 1), ("two or more files changed", lambda n: n >= 2)):
+        tasks = {(r.repo, r.commit) for r in mine if test(r.extra["files_changed"])}
+        if tasks:
+            out.append((label, len(tasks), _cells(mine, setups, tasks)))
+    return out
+
+
+def by_passes(records: list[Record], setups: list[str]) -> list[tuple[str, int, list[Arm]]]:
+    """Exploratory: tasks grouped by the share of passing runs across `setups`. The groups are made
+    from the results they describe, so read which setups the passes came from, not the group sizes."""
+    mine = _single(records, setups)
+    runs, passed = defaultdict(int), defaultdict(int)
+    for r in mine:
+        runs[r.repo, r.commit] += 1
+        passed[r.repo, r.commit] += r.passed
+    out, left = [], set(runs)
+    for label, floor in PASS_BANDS:
+        tasks = {t for t in left if passed[t] / runs[t] >= floor}
+        left -= tasks
+        if tasks:
+            out.append((label, len(tasks), _cells(mine, setups, tasks)))
+    return out
+
+
+def claims(records: list[Record]) -> dict[str, dict[str, int]]:
+    """How often "done" is true: per setup, the runs that ended with STATUS: DONE and how many of
+    those failed the hidden tests. Only runs that were asked for a status line count."""
+    out: dict[str, dict[str, int]] = {}
+    for r in records:
+        claimed = r.extra.get("claimed")
+        if claimed is None:
+            continue
+        row = out.setdefault(r.setup, {"runs": 0, "said_done": 0, "said_done_but_failed": 0, "said_not_done": 0,
+                                       "said_not_done_but_passed": 0, "no_status_line": 0})
+        row["runs"] += 1
+        if claimed == "done":
+            row["said_done"] += 1
+            row["said_done_but_failed"] += not r.passed
+        elif claimed == "not_done":
+            row["said_not_done"] += 1
+            row["said_not_done_but_passed"] += bool(r.passed)
+        else:
+            row["no_status_line"] += 1
+    return out
+
+
+def delegation(records: list[Record]) -> dict[str, dict]:
+    """For planner setups: how the runs really behaved (from the transcripts)."""
+    out: dict[str, dict] = {}
+    for r in records:
+        if "delegations" not in r.extra:
+            continue
+        row = out.setdefault(r.setup, {"runs": 0, "delegated": 0, "orchestrator_edited": 0, "usd": 0.0, "usd_by_model": defaultdict(float)})
+        row["runs"] += 1
+        row["delegated"] += r.extra["delegations"] > 0
+        row["orchestrator_edited"] += r.extra.get("orchestrator_edits", 0) > 0
+        row["usd"] += r.cost_usd
+        for model, part in (r.extra.get("by_model") or {}).items():
+            row["usd_by_model"][model] += part.get("usd", 0.0)
+    return out
+
+
+def render_groups(title: str, groups: list[tuple[str, int, list[Arm]]], setups: list[str]) -> str:
+    lines = [title, "", "| tasks | how many | " + " | ".join(setups) + " |", "|---|---|" + "---|" * len(setups)]
+    for label, n, arms in groups:
+        cells = [f"{a.solved} of {a.runs}" + (f", ${a.usd_per_solved:.2f} per solved" if a.usd_per_solved is not None else "") for a in arms]
+        lines.append(f"| {label} | {n} | " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def render_extras(records: list[Record], setups: list[str]) -> str:
+    """The group tables and the claim and delegation counts, for whatever the records hold."""
+    parts = []
+    files = by_files(records, setups)
+    if files:
+        parts.append(render_groups("Solved runs by how many files the original commit changed (the pre-set difficulty rule):", files, setups))
+    passes = by_passes(records, setups)
+    if passes:
+        parts.append(render_groups("Exploratory: solved runs by how hard each task turned out (share of passing runs across these setups: "
+                                   "easy 5/6 or more, hard under 1/4):", passes, setups))
+    said = claims(records)
+    if said:
+        lines = ['How often "done" is true (runs that ended with a status line):', "",
+                 "| setup | runs | said done | of those, tests failed | said not done | of those, tests passed | no status line |", "|---|---|---|---|---|---|---|"]
+        for s, c in said.items():
+            rate = f" ({c['said_done_but_failed'] / c['said_done']:.0%})" if c["said_done"] else ""
+            lines.append(f"| {s} | {c['runs']} | {c['said_done']} | {c['said_done_but_failed']}{rate} | {c['said_not_done']} | "
+                         f"{c['said_not_done_but_passed']} | {c['no_status_line']} |")
+        parts.append("\n".join(lines))
+    for s, d in delegation(records).items():
+        share = ", ".join(f"{m} {usd / d['usd']:.0%}" for m, usd in sorted(d["usd_by_model"].items())) if d["usd"] else "n/a"
+        parts.append(f"{s}: the orchestrator delegated in {d['delegated']} of {d['runs']} runs and edited files itself in "
+                     f"{d['orchestrator_edited']}. Cost by model: {share}.")
+    return "\n\n".join(parts)
+

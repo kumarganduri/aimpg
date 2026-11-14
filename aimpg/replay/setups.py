@@ -35,7 +35,7 @@ import re as _re
 # names pick which secret from your shell is handed to the agent. Records from
 # strangers set all of these, so each has a strict shape (security review 2026-10-11).
 NAME = _re.compile(r"[\w.+@\-]{1,60}")
-MODEL = _re.compile(r"[\w.:\-]{1,80}")
+MODEL = _re.compile(r"[A-Za-z0-9][\w.:\-]{0,79}")  # never starts with a dash: it is passed as a CLI argument
 KEY_ENV = _re.compile(r"[A-Z][A-Z0-9_]*_API_KEY")
 HOST = _re.compile(r"[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?)+")
 
@@ -183,6 +183,95 @@ def with_model(model: str) -> Setup:
     """Plain Claude Code on a specific model: the model picker's setups."""
     model_id = MODELS.get(model, model)
     return Setup(f"claude-code@{model}", model=model_id, spec={"agent": "claude", "model": model_id})
+
+
+# A planner on a strong model that hands the implementation to a cheaper worker (Report No. 2,
+# suggested in aimpg discussion #2). These are plain first versions: a study's plan can replace both.
+PLANNER_PROMPT = (
+    "You are the orchestrator. You plan and check; you do not write the code yourself.\n"
+    "1. Read enough of the repository to understand the task.\n"
+    "2. Write a self-contained brief for the `worker` agent: what to change and where, and acceptance criteria it can check.\n"
+    "3. Hand the implementation to the `worker` agent with that brief. Do not edit files yourself.\n"
+    "4. When the worker reports back, check its result against the brief. If something is missing or wrong, "
+    "send the worker a corrected brief, at most twice.\n"
+    "5. Finish with a short summary of what was done."
+)
+WORKER_DESCRIPTION = "Implements a change in this repository from a self-contained brief with acceptance criteria."
+WORKER_PROMPT = (
+    "You implement exactly what the brief asks, in this repository. Read the code you need, make the change, "
+    "run the checks the brief names if you can, and report what you changed and whether each acceptance criterion is met."
+)
+_EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+_DELEGATE_TOOLS = {"Agent", "Task"}
+AGENT_KEYS = {"description", "prompt", "model"}  # what a record may set for a sub-agent; nothing else is passed on
+
+
+def check_agents(agents) -> dict:
+    """Sub-agent definitions for Claude Code's --agents, reduced to the fields aimpg passes on.
+
+    Records from strangers carry these, so the shape is strict: names like setup names, text fields
+    as text, a model that looks like a model. Tools, hooks and servers can't be set this way.
+    """
+    if not isinstance(agents, dict) or not agents or len(agents) > 8:
+        raise SetupUnavailable("sub-agents must be a JSON object of 1 to 8 agents")
+    out = {}
+    for name, spec in agents.items():
+        if not isinstance(name, str) or not NAME.fullmatch(name) or not isinstance(spec, dict):
+            raise SetupUnavailable(f"not a sub-agent definition: {str(name)[:60]!r}")
+        if not all(isinstance(spec.get(k), str) and spec[k].strip() for k in ("description", "prompt")):
+            raise SetupUnavailable(f"sub-agent {name!r} needs a description and a prompt")
+        one = {"description": spec["description"], "prompt": spec["prompt"]}
+        if spec.get("model") is not None:
+            if not isinstance(spec["model"], str):
+                raise SetupUnavailable(f"sub-agent {name!r}: not a model name")
+            one["model"] = check_model(MODELS.get(spec["model"], spec["model"]))
+        out[name] = one
+    return out
+
+
+def _delegation(cfg: Path) -> dict:
+    """From the run's transcripts: did the orchestrator delegate, and did it edit files itself?
+
+    A planner told not to write code may still do it. These counts say how often, so a study can
+    report the setup as it really behaved."""
+    delegations = main_edits = worker_edits = 0
+    for path in sorted((cfg / "projects").rglob("*.jsonl")) if (cfg / "projects").is_dir() else []:
+        seen = set()
+        for line in path.read_text(errors="replace").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            message = row.get("message") if isinstance(row, dict) else None
+            content = message.get("content") if isinstance(message, dict) else None
+            if row.get("type") != "assistant" or not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use" or block.get("id") in seen:
+                    continue
+                seen.add(block.get("id"))  # transcripts repeat rows per content block
+                side = bool(row.get("isSidechain"))
+                if block.get("name") in _DELEGATE_TOOLS and not side:
+                    delegations += 1
+                elif block.get("name") in _EDIT_TOOLS:
+                    worker_edits += side
+                    main_edits += not side
+    return {"delegations": delegations, "orchestrator_edits": main_edits, "worker_edits": worker_edits}
+
+
+def planner(planner_model: str = "opus", worker_model: str = "haiku", *, name: str | None = None,
+            prompt: str | None = None, agents: dict | None = None) -> Setup:
+    """Claude Code with `planner_model` as an orchestrator that plans and checks, and a `worker`
+    sub-agent on `worker_model` that implements. Every request is priced by its own model, so the
+    orchestrator's tokens are in the cost."""
+    planner_id = check_model(MODELS.get(planner_model, planner_model))
+    agents = check_agents(agents or {"worker": {"description": WORKER_DESCRIPTION, "prompt": WORKER_PROMPT,
+                                                "model": MODELS.get(worker_model, worker_model)}})
+    prompt = prompt or PLANNER_PROMPT
+    return Setup(name or f"planner@{planner_model}+{worker_model}", model=planner_id,
+                 extra_args=["--append-system-prompt", prompt, "--agents", json.dumps(agents, sort_keys=True)],
+                 spec={"agent": "claude", "model": planner_id, "append_prompt": prompt, "agents": agents},
+                 measure=_delegation)
 
 
 def codex(model: str | None = None) -> Setup:

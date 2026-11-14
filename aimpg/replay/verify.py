@@ -64,11 +64,17 @@ def setup_from(name: str, *, hosts: list[str] | None = None, key_env: str = "") 
         return S.with_model(name)
     if name == "codex" or name.startswith("codex:"):
         return S.codex(name.partition(":")[2] or None)
+    if name == "planner" or name.startswith("planner:"):  # planner:opus+haiku = an Opus planner with a Haiku worker
+        models = (name.partition(":")[2] or "opus+haiku").split("+")
+        if len(models) != 2 or not all(models):
+            raise VerifyError("a planner challenger names two models: planner:opus+haiku (planner, then worker)")
+        return S.planner(*models)
     if name.startswith("cmd:"):
         if not hosts:
             raise VerifyError("a cmd: challenger needs --hosts (the API hosts it may reach, e.g. api.openai.com)")
         return S.command(name[4:], hosts, key_env)
-    raise VerifyError(f"unknown challenger {name!r}: use rtk, terse, haiku/sonnet/opus, a claude-* model id, codex[:model] or cmd:'...'")
+    raise VerifyError(f"unknown challenger {name!r}: use rtk, terse, haiku/sonnet/opus, a claude-* model id, codex[:model], "
+                      "planner[:model+model] or cmd:'...'")
 
 
 # ---------------------------------------------------------------- verdict
@@ -204,7 +210,7 @@ def _remote(repo: str) -> str | None:
 # Texts that can hold internal details (a CLAUDE.md, a prompt, a command line,
 # an internal gateway's host). A private record keeps only their SHA-256, so
 # a setup can still be told apart without revealing it (privacy review, 2026-10-05).
-_PRIVATE_TEXT = ("append_prompt", "claude_md", "settings", "command", "hosts", "key_env")
+_PRIVATE_TEXT = ("append_prompt", "claude_md", "settings", "command", "hosts", "key_env", "agents")
 
 
 def _spec(setup: S.Setup, public: bool) -> dict:
@@ -346,6 +352,12 @@ def setup_from_spec(spec: dict) -> S.Setup:
         return S.command(spec["command"], spec.get("hosts", []), spec.get("key_env", ""), name=name)
     if spec.get("rtk"):
         return S.RTK
+    if spec.get("agents_sha256") and not spec.get("agents"):
+        raise VerifyError(f"{name}: the record keeps only a hash of its sub-agents (not --public)")
+    if spec.get("agents"):  # a planner with sub-agents; check_agents keeps only description, prompt and model
+        if not isinstance(spec.get("append_prompt"), str) or not isinstance(spec.get("model"), str):
+            raise S.SetupUnavailable(f"{name}: a planner record needs its model and prompt")
+        return S.planner(spec["model"], name=name, prompt=spec["append_prompt"], agents=spec["agents"])
     if spec.get("settings_sha256") and not spec.get("settings"):
         raise VerifyError(f"{name}: the record keeps only a hash of settings.json (not --public)")
     if not any(spec.get(k) for k in ("append_prompt", "claude_md", "settings")):
@@ -482,6 +494,10 @@ def describe_foreign(record: dict) -> str:
             if spec.get(key):
                 value = spec[key] if isinstance(spec[key], str) else ", ".join(spec[key])
                 lines.append(f"  {label}:\n" + "\n".join("    | " + l for l in value.splitlines()))
+        for agent_name, agent in (spec.get("agents") or {}).items() if isinstance(spec.get("agents"), dict) else []:
+            if isinstance(agent, dict):
+                lines.append(f"  sub-agent {str(agent_name)[:60]} (model {str(agent.get('model') or 'the same')[:80]}), its prompt:\n"
+                             + "\n".join("    | " + l for l in str(agent.get("prompt") or "").splitlines()))
     return "\n".join(lines)
 
 

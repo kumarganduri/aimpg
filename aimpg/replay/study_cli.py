@@ -17,6 +17,18 @@ nothing in it changes afterwards. Example:
       "repos": [{"url": "https://github.com/pallets/click", "path": "~/study/click"}, ...]
     }
 
+Optional, added for Report No. 2:
+
+      "challengers": [..., "planner:opus+haiku"]   an Opus orchestrator that plans and checks, with a Haiku
+                                                   worker sub-agent that implements; all tokens are priced
+      "multi_file_per_repo": 3    at least this many of each repo's commits change two or more non-test
+                                  files (as far as the repo has them); the rest are the earliest others
+      "ask_status": true          every task ends by asking for a `STATUS: DONE` / `STATUS: NOT DONE`
+                                  line, and each run records what the agent claimed
+
+The report then also shows results by files changed (one, or more than one), an exploratory
+table by how hard each task turned out, how often "done" was true, and what a planner really did.
+
 select (free)  the first N qualifying commits per repo after the cutoff, by any
                author, with each repo's full candidate list saved
 run (paid)     every setup on every selected commit × repeats, plus the
@@ -119,7 +131,8 @@ def _select_all(plan: dict) -> int:
             for attempt in range(3):  # blobless clones fetch file contents on demand; GitHub sometimes drops one
                 try:
                     _select(Path(r["path"]), argparse.Namespace(days=365, cutoff=plan["cutoff"],
-                                                                max=plan["commits_per_repo"] * 2, any_author=True))
+                                                                max=plan["commits_per_repo"] * 2, any_author=True,
+                                                                multi_min=plan.get("multi_file_per_repo", 0)))
                     break
                 except GitError as exc:
                     print(f"  git failed ({str(exc)[:120]}); retrying in 30 s" if attempt < 2 else f"  git failed 3 times: {exc}")
@@ -145,7 +158,7 @@ def _selected(plan: dict, repo: str, n: int):
     path = _state(Path(repo)) / "selected.jsonl"
     if not path.exists():
         raise SystemExit(f"run `aimpg study select` first ({repo} has no selection)")
-    return select.load(path)[:n]
+    return select.pick(select.load(path), n, plan.get("multi_file_per_repo", 0))
 
 
 def _setups(plan: dict):
@@ -187,7 +200,7 @@ def _run(plan: dict, args) -> int:
     out.mkdir(exist_ok=True)
     cfg = runner.Config(model="claude-sonnet-5-5", per_run_budget_usd=plan.get("per_run_budget_usd", 2.0), total_cap_usd=cap,
                         api_key=keys.get("ANTHROPIC_API_KEY", ""), task_mode=plan.get("task_mode", "hint"), keys=keys,
-                        agent_budget_flag_usd=plan.get("agent_budget_flag_usd", 50.0))
+                        agent_budget_flag_usd=plan.get("agent_budget_flag_usd", 50.0), ask_status=bool(plan.get("ask_status")))
     layout, spent = Layout(secure_root()), 0.0
     for repo, commits in selected.items():
         results = out / f"{Path(repo).name}.jsonl"
@@ -236,6 +249,10 @@ def _report(plan: dict, folder: Path | None = None, *, save: bool = True) -> int
     if rtk:
         fired = sum(1 for r in rtk if r.extra.get("rtk_fired"))
         text += f"\n\nRTK fired in {fired} of {len(rtk)} RTK runs (RTK's own count); results above include all runs."
+    singles = [base, *[setup_from(c).name for c in plan["challengers"]]]
+    extras = study.render_extras(records, [s for s in singles if any(r.setup == s for r in records)])
+    if extras:
+        text += "\n\n" + extras
     print(text)
     if not save:
         return 0

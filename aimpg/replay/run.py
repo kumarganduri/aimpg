@@ -60,6 +60,7 @@ class Config:
     # high for Haiku 5.5; a cap at the agent's price would stop Haiku runs early. 0 = per_run_budget_usd.
     agent_budget_flag_usd: float = 0.0
     keys: dict[str, str] = field(default_factory=dict)  # other agents' keys by env var (from the user's shell)
+    ask_status: bool = False  # end the task with STATUS_ASK and record what the agent claims (studies)
 
     def key_for(self, env_name: str) -> str:
         if not env_name:
@@ -67,8 +68,38 @@ class Config:
         return self.keys.get(env_name) or (self.api_key if env_name == "ANTHROPIC_API_KEY" else "")
 
 
-def task_text(commit: Commit, mode: str) -> str:
+# Asked of every setup alike, so a study can count how often "done" is true (Report No. 2).
+STATUS_ASK = ("When you finish, end your reply with exactly one of these lines: `STATUS: DONE` if you believe the task is "
+              "complete and correct, or `STATUS: NOT DONE` if it isn't.")
+_STATUS = re.compile(r"^[\s>*_`]*STATUS:\s*(NOT[ _-]?DONE|DONE)\b", re.I | re.M)
+
+
+def claim_of(message: str) -> str:
+    """What the agent's final message says about its own work: "done" | "not_done" | "none" (no status line)."""
+    found = _STATUS.findall(message or "")
+    if not found:
+        return "none"
+    return "done" if found[-1].upper() == "DONE" else "not_done"
+
+
+def codex_last_message(stdout: str) -> str:
+    """The last message Codex wrote to the user (`codex exec --json` prints one event per line)."""
+    last = ""
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        item = event.get("item") if isinstance(event, dict) else None
+        if isinstance(item, dict) and item.get("type") in ("agent_message", "assistant_message") and isinstance(item.get("text"), str):
+            last = item["text"]
+    return last
+
+
+def task_text(commit: Commit, mode: str, ask_status: bool = False) -> str:
     """What the agent is told. Identical for every setup in a batch."""
+    if ask_status:
+        return task_text(commit, mode) + "\n\n" + STATUS_ASK
     if mode != "tests":
         return commit.task
     message = (commit.subject + ("\n\n" + commit.body if commit.body.strip() else "")).strip()
@@ -193,7 +224,9 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
     run_id = run_id or f"{commit.sha[:10]}-{setup.name}-r{repeat}-a{attempt}"
     started = time.time()
 
-    measured: dict = {}
+    # How many non-test files the original commit changed: a study's difficulty groups come from this,
+    # fixed before any run, so results can be read by group straight from the records.
+    measured: dict = {"files_changed": len(commit.code_files)}
 
     def record(outcome: str, *, usages=(), cost=0.0, check="", note="", model=None, cost_known=True) -> Record:
         return Record(run_id, commit.repo, commit.sha, setup.name, repeat, outcome, outcome == "passed",
@@ -253,7 +286,7 @@ def _run_agent(commit: Commit, setup: Setup, layout: Layout, cfg: Config, work: 
             proxy_socket=proxy.socket_path,
         )
         res = sandbox.run(
-            [*setup.argv(task or task_text(commit, cfg.task_mode), cfg.model, cfg.agent_budget_flag_usd or cfg.per_run_budget_usd,
+            [*setup.argv(task or task_text(commit, cfg.task_mode, cfg.ask_status), cfg.model, cfg.agent_budget_flag_usd or cfg.per_run_budget_usd,
                          cfgdir), *extra_args],
             profile=profile,
             profile_path=layout.profile_path(run_id),
@@ -269,9 +302,13 @@ def _run_agent(commit: Commit, setup: Setup, layout: Layout, cfg: Config, work: 
             measured["measure_error"] = str(exc)[:200]
 
     if setup.agent != "claude":
+        if cfg.ask_status and task is None and setup.agent == "codex":
+            measured["claimed"] = claim_of(codex_last_message(res.stdout or ""))
         return _finish_other(commit, setup, layout, work, cfgdir, res, blocked, record)
 
     result = parse_result(res.stdout)
+    if cfg.ask_status and task is None:
+        measured["claimed"] = claim_of(str(result.get("result") or ""))
     # audit trail (no key in it), in the run folder the agent can't write to, so no planted symlink is followed
     (cfgdir.parent / "result.json").write_text(json.dumps(result, indent=1))
     parsed = parse_logs(iter_log_files(cfgdir / "projects"))
@@ -285,6 +322,15 @@ def _run_agent(commit: Commit, setup: Setup, layout: Layout, cfg: Config, work: 
     priced = [usage_cost(r.usage, r.model) for r in parsed.requests]
     cost = sum(p for p in priced if p is not None) if parsed.requests and all(p is not None for p in priced) else reported
     measured["agent_reported_cost_usd"] = round(reported, 6)
+    if len({r.model for r in parsed.requests}) > 1 or any(r.is_sidechain for r in parsed.requests):
+        # more than one model, or sub-agents: who did how much (a planner with a cheaper worker)
+        split: dict[str, list] = {}
+        for r, usd in zip(parsed.requests, priced):
+            row = split.setdefault(r.model, [0, 0.0])
+            row[0] += 1
+            row[1] += usd or 0.0
+        measured["by_model"] = {m: {"requests": n, "usd": round(usd, 6)} for m, (n, usd) in sorted(split.items())}
+        measured["subagent_requests"] = sum(1 for r in parsed.requests if r.is_sidechain)
     note = f"blocked: {blocked[:5]}" if blocked else ""
     if result.get("escapes"):
         note += f" escapes: {result['escapes']}"

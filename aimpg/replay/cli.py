@@ -131,10 +131,17 @@ def _select(repo: Path, args) -> int:
     print(f"{len(commits)} candidates after cheap filters; skipped: {skipped or 'none'}")
     layout = Layout(secure_root())
     good, setup_failures = [], 0
+    multi_min = getattr(args, "multi_min", 0)  # a study can ask for this many multi-file commits among them
+    not_checked, last_seen = [], None
     with AllowlistProxy() as proxy:
         for c in commits:
-            if len(good) >= args.max:
+            enough_multi = sum(select.is_multi_file(g) for g in good) >= multi_min
+            if len(good) >= args.max and enough_multi:
                 break
+            last_seen = c
+            if len(good) >= args.max and not select.is_multi_file(c):
+                not_checked.append(c)  # only multi-file commits are still wanted; listed in the manifest
+                continue
             check = select.precheck(c, layout, proxy)
             mark = "✓" if check.ok else "✗"
             print(f"  {mark} {c.sha[:8]} {c.subject[:60]:<60} {'' if check.ok else check.reason}")
@@ -147,8 +154,12 @@ def _select(repo: Path, args) -> int:
                     break
     out = _state(repo) / "selected.jsonl"
     select.save(good, out)
-    checked = commits[: commits.index(good[-1]) + 1] if good else commits
-    (out.with_name("selected.manifest.json")).write_text(json.dumps(select.manifest(args.cutoff, any_author, checked, good), indent=1))
+    if multi_min:  # every candidate looked at, including the ones after the last qualifying commit
+        checked = commits[: commits.index(last_seen) + 1] if last_seen is not None else commits
+    else:
+        checked = commits[: commits.index(good[-1]) + 1] if good else commits
+    (out.with_name("selected.manifest.json")).write_text(json.dumps(
+        select.manifest(args.cutoff, any_author, checked, good, not_checked), indent=1))
     print(f"\n{len(good)} replayable commits saved to {out}")
     return 0 if good else 1
 
