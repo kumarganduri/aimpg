@@ -26,8 +26,17 @@ Optional, added for Report No. 2:
       "ask_status": true          every task ends by asking for a `STATUS: DONE` / `STATUS: NOT DONE`
                                   line, and each run records what the agent claimed
 
-The report then also shows results by files changed (one, or more than one), an exploratory
-table by how hard each task turned out, how often "done" was true, and what a planner really did.
+      "exclude_commits": ["<sha>", ...]   never select these (an earlier study's tasks); the study then
+                                          keeps its own selection, apart from other studies of the same repos
+      "comparisons": [{"challenger": "planner:opus+haiku", "baseline": "haiku", "primary": "solved"}, ...]
+                                  the primary comparisons, between any two setups (default: every
+                                  challenger against the baseline); primary: per_solved | tokens | per_attempt | solved
+      "also": [{"challenger": "haiku", "baseline": "plain"}, ...]   reported the same way, but never a headline
+
+The report then also shows results by pre-set task groups (description under or over 15 words;
+30 or fewer changed lines of code, or more), each primary comparison within those groups, an
+exploratory table by how hard each task turned out, how often "done" was true, and what a planner
+really did.
 
 select (free)  the first N qualifying commits per repo after the cutoff, by any
                author, with each repo's full candidate list saved
@@ -108,8 +117,21 @@ def main(args) -> int:
 MIN_QUALIFYING = 5  # pre-registered: fewer qualifying commits than this and the repo is replaced by the next reserve
 
 
-def _qualified(repo: str) -> int:
-    path = _state(Path(repo)) / "selected.jsonl"
+def _sel_dir(plan: dict, repo: str) -> Path:
+    """Where a repo's selection lives. A study that excludes commits keeps its own, so it never picks
+    up (or overwrites) another study's selection of the same repo."""
+    if "exclude_commits" not in plan:
+        return _state(Path(repo))
+    names = [Path(r["path"]).name for r in plan["repos"] + plan.get("reserve_repos", [])]
+    if len(set(names)) != len(names):
+        raise SystemExit("a study with exclude_commits needs repo folders with different names")
+    d = _out(plan) / "selection" / Path(repo).name
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _qualified(plan: dict, repo: str) -> int:
+    path = _sel_dir(plan, repo) / "selected.jsonl"
     return len(select.load(path)) if path.exists() and path.read_text().strip() else 0
 
 
@@ -124,20 +146,22 @@ def _select_all(plan: dict) -> int:
         if not Path(r["path"]).is_dir():
             print(f"  not cloned: git clone --filter=blob:none --single-branch {r.get('url')} {r['path']}")
             n = 0
-        elif (_state(Path(r["path"])) / "selected.manifest.json").exists():
-            n = _qualified(r["path"])  # finished in an earlier run (the manifest is written last)
-            print(f"  already selected: {n} qualifying (delete {_state(Path(r['path']))} to redo)")
+        elif (_sel_dir(plan, r["path"]) / "selected.manifest.json").exists():
+            n = _qualified(plan, r["path"])  # finished in an earlier run (the manifest is written last)
+            print(f"  already selected: {n} qualifying (delete {_sel_dir(plan, r['path'])} to redo)")
         else:
             for attempt in range(3):  # blobless clones fetch file contents on demand; GitHub sometimes drops one
                 try:
                     _select(Path(r["path"]), argparse.Namespace(days=365, cutoff=plan["cutoff"],
                                                                 max=plan["commits_per_repo"] * 2, any_author=True,
-                                                                multi_min=plan.get("multi_file_per_repo", 0)))
+                                                                multi_min=plan.get("multi_file_per_repo", 0),
+                                                                exclude=_excluded(plan),
+                                                                state_dir=_sel_dir(plan, r["path"]) if "exclude_commits" in plan else None))
                     break
                 except GitError as exc:
                     print(f"  git failed ({str(exc)[:120]}); retrying in 30 s" if attempt < 2 else f"  git failed 3 times: {exc}")
                     time.sleep(30)
-            n = _qualified(r["path"])
+            n = _qualified(plan, r["path"])
         if n >= MIN_QUALIFYING:
             summary["repos"].append({"path": r["path"], "url": r.get("url"), "qualifying": n})
         elif reserves:
@@ -154,11 +178,35 @@ def _select_all(plan: dict) -> int:
     return 0
 
 
+def _excluded(plan: dict) -> frozenset[str]:
+    import re
+
+    shas = plan.get("exclude_commits") or []
+    bad = [s for s in shas if not isinstance(s, str) or not re.fullmatch(r"[0-9a-f]{40}", s)]
+    if bad:
+        raise SystemExit(f"exclude_commits takes full commit ids (40 hex characters): {str(bad[0])[:60]!r}")
+    return frozenset(shas)
+
+
 def _selected(plan: dict, repo: str, n: int):
-    path = _state(Path(repo)) / "selected.jsonl"
+    path = _sel_dir(plan, repo) / "selected.jsonl"
     if not path.exists():
         raise SystemExit(f"run `aimpg study select` first ({repo} has no selection)")
-    return select.pick(select.load(path), n, plan.get("multi_file_per_repo", 0))
+    commits = [c for c in select.load(path) if c.sha not in _excluded(plan)]  # also if a selection was copied in
+    return select.pick(commits, n, plan.get("multi_file_per_repo", 0))
+
+
+def _pairs(plan: dict, key: str) -> list[tuple[str, str, str]]:
+    """(baseline, challenger, primary) setup names for the plan's `comparisons` or `also` list."""
+    out = []
+    for c in plan.get(key) or []:
+        if not isinstance(c, dict) or not c.get("challenger") or not c.get("baseline"):
+            raise SystemExit(f"each entry of {key!r} needs a challenger and a baseline")
+        primary = c.get("primary", "per_solved")
+        if primary not in study.METRICS:
+            raise SystemExit(f"{key}: primary must be one of {', '.join(study.METRICS)}")
+        out.append((setup_from(c["baseline"]).name, setup_from(c["challenger"]).name, primary))
+    return out
 
 
 def _setups(plan: dict):
@@ -239,12 +287,23 @@ def _report(plan: dict, folder: Path | None = None, *, save: bool = True) -> int
         return 1
     base = setup_from(plan["baseline"]).name
     primary = plan.get("primary", {})
-    comparisons = [study.compare(records, base, setup_from(c).name, primary=primary.get(c, "per_solved"))
-                   for c in plan["challengers"]]
+    pairs = _pairs(plan, "comparisons") or [(base, setup_from(c).name, primary.get(c, "per_solved")) for c in plan["challengers"]]
+    comparisons = [study.compare(records, b, c, primary=m) for b, c, m in pairs]
     if any(r.setup == "chain-fresh" for r in records):
         comparisons.append(study.compare(records, "chain-continue", "chain-fresh", primary=primary.get("fresh-session", "per_attempt")))
     study.holm(comparisons)
     text = study.render(comparisons)
+    also = [study.compare(records, b, c, primary=m) for b, c, m in _pairs(plan, "also")]
+    if also:  # reported the same way, but outside the Holm correction and never a headline
+        text += "\n\nAlso reported (not primary comparisons; never a headline):\n\n" + "\n".join(study.render(also).splitlines()[:len(also) + 2])
+    for group, (_, bands) in study.TASK_GROUPS.items() if plan.get("comparisons") else ():
+        for label, _ in bands:
+            part = study.subset(records, group, label)
+            within = [study.compare(part, b, c, primary=m) for b, c, m in pairs if any(r.setup == c for r in part)]
+            within = [c for c in within if c.commits]
+            if within:
+                text += (f"\n\nWithin tasks with {label} ({within[0].commits} tasks; never a headline):\n\n"
+                         + "\n".join(study.render(within).splitlines()[:len(within) + 2]))
     rtk = [r for r in records if r.setup == "claude-code+rtk"]
     if rtk:
         fired = sum(1 for r in rtk if r.extra.get("rtk_fired"))

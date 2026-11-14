@@ -49,6 +49,12 @@ class Commit:
     runner: str = ""  # "pytest" | "vitest" | "jest"
     ts: float = 0.0
     hint: str = ""  # interface hint: new names the hidden tests use (hints.py)
+    code_lines: int = -1  # lines added plus removed in non-test files (-1: not measured yet)
+
+    @property
+    def words(self) -> int:
+        """Length of the description the agent gets: the commit message, without the interface hint."""
+        return len((self.subject + " " + self.body).split())
 
     @property
     def task(self) -> str:
@@ -91,6 +97,16 @@ def export_tree(repo: str, sha: str, dest: Path) -> None:
     (dest / ".git" / "info" / "exclude").write_text("\n".join(CACHE_DIRS) + "\n")
     subprocess.run(["git", "-C", str(dest), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(dest), *ident, "commit", "-q", "-m", "replay base", "--allow-empty"], check=True)
+
+
+def code_lines(repo: str | Path, parent: str, sha: str) -> int:
+    """Lines added plus removed by a commit in its non-test files (binary files count as 0)."""
+    total = 0
+    for line in git(repo, "diff", "--numstat", "--no-renames", parent, sha).decode(errors="replace").splitlines():
+        added, removed, name = (line.split("\t") + ["", ""])[:3]
+        if added.isdigit() and removed.isdigit() and not TEST_FILE.search(name):
+            total += int(added) + int(removed)
+    return total
 
 
 def file_at(repo: str, sha: str, path: str) -> bytes | None:

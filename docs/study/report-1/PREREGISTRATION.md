@@ -156,4 +156,13 @@ Added after the report was published. Nothing above has been edited. This analys
 - **Haiku against Sonnet stands.** Sonnet solved no task that Haiku never solved; Haiku solved 1 that Sonnet never did. Haiku's failed runs were not short: 13 requests and 120 seconds on average, against 8 and 60 for Sonnet's.
 - **The Opus result needs this caveat.** "2.6× the cost per solved task" averages over tasks that Haiku and Sonnet never solved in any run. Opus solved 8 of 66 runs on those.
 - **The task set separates the models poorly:** 27 tasks are easy for every setup and 22 too hard for most. The counts on hard tasks are small; they are a pattern to test, not a measured rate.
+- **"Hard" partly means thinly described (added later on 2026-11-14).** The task an agent gets is the commit message. The hard tasks' messages have a median of 7.5 words; the easy ones 93. Passing runs by description length:
+
+  | Description | Tasks | Haiku 5.5 | Sonnet 5.5 | Opus 5.5 | Codex |
+  |---|---|---|---|---|---|
+  | 50 words or more | 19 | 47 of 57 | 51 of 57 | 53 of 57 | 54 of 57 |
+  | 15 to 49 words | 5 | 3 of 15 | 1 of 15 | 3 of 15 | 2 of 15 |
+  | under 15 words | 32 | 33 of 96 | 33 of 96 | 47 of 96 | 40 of 96 |
+
+  So the hard tasks partly test working out what is wanted from very little, and Opus's lead comes mostly from there. On tasks whose original commit changed more than 30 lines of code, every setup solved few runs (Haiku 15 of 60, Sonnet 14, Opus 17, Codex 22). Each task's description length and size are published as `tasks.json` with the data.
 - **No pre-registered result changes.** The report page shows this as a section of its own, computed from the published records by `difficulty()` in `make_page.py`.

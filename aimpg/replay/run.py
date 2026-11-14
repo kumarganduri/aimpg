@@ -224,9 +224,18 @@ def run_one(commit: Commit, setup: Setup, repeat: int, layout: Layout, cfg: Conf
     run_id = run_id or f"{commit.sha[:10]}-{setup.name}-r{repeat}-a{attempt}"
     started = time.time()
 
-    # How many non-test files the original commit changed: a study's difficulty groups come from this,
-    # fixed before any run, so results can be read by group straight from the records.
-    measured: dict = {"files_changed": len(commit.code_files)}
+    # What the task looked like before any run: how long its description is and how much code the
+    # original commit changed. A study's task groups come from these, so results can be read by group
+    # straight from the records.
+    measured: dict = {"files_changed": len(commit.code_files), "description_words": commit.words}
+    lines = commit.code_lines
+    if lines < 0:  # a selection saved before aimpg measured it
+        try:
+            lines = workspace.code_lines(commit.repo, commit.parent, commit.sha)
+        except WorkspaceError:
+            lines = -1
+    if lines >= 0:
+        measured["code_lines"] = lines
 
     def record(outcome: str, *, usages=(), cost=0.0, check="", note="", model=None, cost_known=True) -> Record:
         return Record(run_id, commit.repo, commit.sha, setup.name, repeat, outcome, outcome == "passed",
