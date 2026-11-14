@@ -140,3 +140,20 @@ Added after the results were known. Nothing above has been edited.
 - **Pilot:** the pilot records (litestar, 13 runs) are now published with the data. Priced from tokens at the final price tables they add up to $1.79; the $1.81 above was computed on 2026-10-13.
 - **Published file name:** the file before the quota repair is published as `pyinfra.jsonl.before-quota-repair`, as named above, so that tools reading `*.jsonl` don't include it.
 - **Reruns:** the study's runs are not `aimpg verify` records, so `aimpg verify --rerun` can't take them directly. To recompute every number from the published data: `aimpg study report plan.json --runs data/`. To rerun a comparison, use the public Haiku-vs-Sonnet records on the scoreboard (click, starlette, axios), or rerun the whole study with `aimpg study run plan.json`.
+
+## Found after publication (2026-11-14, results by task difficulty)
+Added after the report was published. Nothing above has been edited. This analysis was **not pre-registered**, and its groups were chosen after seeing the data.
+- **Why:** a reader (u/bisonbear2 on Reddit) pointed out that cost per solved task can flatter a cheap model that only solves the tasks every model solves.
+- **How:** each of the 56 tasks is graded by its passing runs across four setups (Haiku 5.5, Sonnet 5.5, Opus 5.5 and Codex, 3 runs each, so 0 to 12). RTK is left out because it runs Sonnet again. Groups: easy (10 to 12), in between (3 to 9), hard (0 to 2). The groups are made from the same runs they describe.
+- **Passing runs by group:**
+
+  | Tasks | How many | Haiku 5.5 | Sonnet 5.5 | Opus 5.5 | Codex |
+  |---|---|---|---|---|---|
+  | Easy | 27 | 76 of 81 | 80 of 81 | 81 of 81 | 79 of 81 |
+  | In between | 7 | 7 of 21 | 5 of 21 | 14 of 21 | 13 of 21 |
+  | Hard | 22 | 0 of 66 | 0 of 66 | 8 of 66 | 4 of 66 |
+
+- **Haiku against Sonnet stands.** Sonnet solved no task that Haiku never solved; Haiku solved 1 that Sonnet never did. Haiku's failed runs were not short: 13 requests and 120 seconds on average, against 8 and 60 for Sonnet's.
+- **The Opus result needs this caveat.** "2.6× the cost per solved task" averages over tasks that Haiku and Sonnet never solved in any run. Opus solved 8 of 66 runs on those.
+- **The task set separates the models poorly:** 27 tasks are easy for every setup and 22 too hard for most. The counts on hard tasks are small; they are a pattern to test, not a measured rate.
+- **No pre-registered result changes.** The report page shows this as a section of its own, computed from the published records by `difficulty()` in `make_page.py`.
