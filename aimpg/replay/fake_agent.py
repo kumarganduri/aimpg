@@ -4,6 +4,10 @@
   (assistant rows with usage, like the real thing);
 * prints one JSON result to stdout (`--output-format json` shape).
 
+When the task asks for a status line, it ends with STATUS: DONE whether or not it did the work
+(mode honest: does nothing and says STATUS: NOT DONE). Mode delegate solves through a made-up
+sub-agent on another model, like a planner with a worker.
+
 Modes: solve (apply the solution the test staged), nothing, cheat (rewrite
 visible tests to trivial ones), crash, timeout,
 budget (reports a budget stop), escape (tries to break out of the sandbox and
@@ -56,6 +60,33 @@ def transcript(cfg: Path, cwd: Path, model: str, n: int) -> tuple[dict, dict]:
                            "cacheReadInputTokens": totals["cache_read_input_tokens"],
                            "cacheCreationInputTokens": totals["cache_creation_input_tokens"]}}
     return usage, model_usage
+
+
+def worker_transcript(cfg: Path, cwd: Path, model: str) -> dict:
+    """A sub-agent's rows (isSidechain) on another model, plus the orchestrator's hand-off: what a
+    planner with a worker leaves behind. Returns that model's modelUsage."""
+    session = str(uuid.uuid4())
+    folder = cfg / "projects" / str(cwd).replace("/", "-") / session / "subagents"
+    folder.mkdir(parents=True, exist_ok=True)
+    usage = {"input_tokens": 7, "cache_creation_input_tokens": 2000, "cache_read_input_tokens": 5000, "output_tokens": 300}
+
+    def row(i, side, content, row_model=model, with_usage=True):
+        message = {"id": f"msg_w{i}", "model": row_model, "content": content}
+        if with_usage:
+            message["usage"] = usage
+        return {"type": "assistant", "sessionId": session, "cwd": str(cwd), "timestamp": _now_iso(10 + i), "isSidechain": side,
+                "requestId": f"req_worker_{session[:8]}_{i}", "version": "fake", "message": message}
+
+    rows = [row(0, True, [{"type": "tool_use", "id": "tu_edit_1", "name": "Edit", "input": {}}]),
+            row(1, True, [{"type": "tool_use", "id": "tu_edit_2", "name": "Write", "input": {}}])]
+    (folder / "agent-worker.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    # the orchestrator's own hand-off, in a main-chain file; no usage, so it adds no tokens of its own
+    hand_off = row(2, False, [{"type": "tool_use", "id": "tu_agent_1", "name": "Agent", "input": {"subagent_type": "worker"}}],
+                   row_model="orchestrator", with_usage=False)
+    (folder.parent.parent / f"{session}-handoff.jsonl").write_text(json.dumps(hand_off) + "\n")
+    return {model: {"inputTokens": 2 * usage["input_tokens"], "outputTokens": 2 * usage["output_tokens"],
+                    "cacheReadInputTokens": 2 * usage["cache_read_input_tokens"],
+                    "cacheCreationInputTokens": 2 * usage["cache_creation_input_tokens"]}}
 
 
 def _stubs(folder: Path) -> set[str]:
@@ -132,6 +163,8 @@ def other_agent(mode: str, args: list[str]) -> int:
         codex_rollout(cfg, cwd, model, 3)
         # its output can quote error text from the code it writes: never an account error
         print(json.dumps({"type": "item.completed", "item": {"type": "file_change", "diff": "+ # insufficient_quota: 401 Unauthorized"}}))
+        if any("STATUS: DONE" in a for a in args):
+            print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Finished.\nSTATUS: DONE"}}))
         print('{"type":"turn.completed"}')
     if mode == "crash":
         return 1
@@ -165,6 +198,11 @@ def main() -> int:
         return 1
     result["usage"], result["modelUsage"] = transcript(cfg, cwd, model, 3)
     result["session_id"] = "fake-session"
+    if any("STATUS: DONE" in a for a in args):  # the task asked for a status line
+        result["result"] = "Nothing to do.\n\nSTATUS: NOT DONE" if mode == "honest" else "All changes are in.\n\n**STATUS: DONE**"
+    if mode == "delegate":
+        result["modelUsage"].update(worker_transcript(cfg, cwd, "claude-haiku-5-5"))
+        mode = "solve"
     if "--resume" in args:  # a resumed session re-reads a longer context: make that visible in tokens
         result["resumed"] = args[args.index("--resume") + 1]
     if mode == "budget":

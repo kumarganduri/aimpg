@@ -58,14 +58,40 @@ def candidates(repo: str, since: float, cutoff: float, *, any_author: bool = Fal
     return out, skipped
 
 
-def manifest(cutoff: str, any_author: bool, candidates_: list[Commit], qualified: list[Commit]) -> dict:
-    """What a study commits to: every candidate in order and which qualified, so cherry-picking would show."""
+def manifest(cutoff: str, any_author: bool, candidates_: list[Commit], qualified: list[Commit],
+             not_checked: list[Commit] | None = None) -> dict:
+    """What a study commits to: every candidate in order and which qualified, so cherry-picking would show.
+
+    not_checked: candidates passed over without a test run, because enough single-file commits had
+    already qualified and only multi-file ones were still wanted."""
     import hashlib
 
     shas = [c.sha for c in candidates_]
-    return {"cutoff": cutoff, "any_author": any_author, "candidates": shas,
-            "candidates_sha256": hashlib.sha256("\n".join(shas).encode()).hexdigest(),
-            "qualified": [c.sha for c in qualified]}
+    out = {"cutoff": cutoff, "any_author": any_author, "candidates": shas,
+           "candidates_sha256": hashlib.sha256("\n".join(shas).encode()).hexdigest(),
+           "qualified": [c.sha for c in qualified]}
+    if not_checked:
+        out["not_checked_single_file"] = [c.sha for c in not_checked]
+    return out
+
+
+def is_multi_file(commit: Commit) -> bool:
+    """The difficulty rule a study fixes before any run: did the original commit change two or more
+    non-test files? It uses only the commit, never a model's result."""
+    return len(commit.code_files) >= 2
+
+
+def pick(commits: list[Commit], n: int, multi_min: int = 0) -> list[Commit]:
+    """The n commits a study runs, from a repo's qualifying commits (oldest first).
+
+    With multi_min = 0 these are simply the first n. Otherwise the first `multi_min` multi-file
+    commits are taken (or as many as there are), and the remaining places go to the earliest other
+    commits. The result is in date order."""
+    multi = [c for c in commits if is_multi_file(c)][:max(0, min(multi_min, n))]
+    taken = {c.sha for c in multi}
+    rest = [c for c in commits if c.sha not in taken][:n - len(multi)]
+    taken |= {c.sha for c in rest}
+    return [c for c in commits if c.sha in taken]
 
 
 def commit_at(repo: str, sha: str) -> Commit:

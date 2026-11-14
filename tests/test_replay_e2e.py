@@ -328,3 +328,35 @@ def test_codex_quota_recorded_only_in_its_session_log_is_an_account_error(prepar
     layout, commit, _, _ = prepared
     rec = run_one(commit, fake("quota-in-log", agent="codex"), 0, layout, cfg())
     assert rec.outcome == "account_error" and "Quota exceeded" in rec.note
+
+
+def test_said_done_is_recorded_whether_or_not_it_was_true(prepared):
+    layout, commit, _, solution = prepared
+    asked = cfg(ask_status=True)
+    solved = run_one(commit, fake("solve"), 0, layout, asked, solution=solution, run_id="claim-solve")
+    assert solved.outcome == "passed" and solved.extra["claimed"] == "done"
+    idle = run_one(commit, fake("nothing"), 0, layout, asked, run_id="claim-idle")
+    assert idle.outcome == "tests_failed" and idle.extra["claimed"] == "done"  # said done, tests failed
+    honest = run_one(commit, fake("honest"), 0, layout, asked, run_id="claim-honest")
+    assert honest.outcome == "tests_failed" and honest.extra["claimed"] == "not_done"
+    codex = run_one(commit, fake("solve", agent="codex"), 0, layout, cfg(ask_status=True, keys={"OPENAI_API_KEY": "sk-test"}),
+                    solution=solution, run_id="claim-codex")
+    assert codex.outcome == "passed" and codex.extra["claimed"] == "done"
+    not_asked = run_one(commit, fake("solve"), 0, layout, cfg(), solution=solution, run_id="claim-not-asked")
+    assert "claimed" not in not_asked.extra and not_asked.extra["files_changed"] == 1
+
+
+def test_a_worker_on_another_model_is_priced_and_counted_separately(prepared):
+    from aimpg.replay import setups as S
+
+    layout, commit, _, solution = prepared
+    setup = fake("delegate")
+    setup.measure = S._delegation  # what the planner setup measures after each run
+    rec = run_one(commit, setup, 0, layout, cfg(), solution=solution, run_id="delegate")
+    assert rec.outcome == "passed", rec.note
+    assert rec.tokens_check == "ok"  # the worker's tokens are in the transcript total and in modelUsage
+    assert len(rec.usages) == 5 and rec.extra["subagent_requests"] == 2
+    assert rec.extra["by_model"]["claude-haiku-5-5"]["requests"] == 2 and rec.extra["by_model"]["claude-haiku-5-5"]["usd"] > 0
+    assert rec.extra["by_model"]["claude-sonnet-5"]["requests"] == 3
+    assert (rec.extra["delegations"], rec.extra["orchestrator_edits"], rec.extra["worker_edits"]) == (1, 0, 2)
+
