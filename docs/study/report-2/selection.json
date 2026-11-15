@@ -1,0 +1,45 @@
+{
+ "repos": [
+  {
+   "path": "~/aimpg-study/starlette",
+   "url": "https://github.com/Kludex/starlette",
+   "qualifying": 14
+  },
+  {
+   "path": "~/aimpg-study/click",
+   "url": "https://github.com/pallets/click",
+   "qualifying": 12
+  },
+  {
+   "path": "~/aimpg-study/pyinfra",
+   "url": "https://github.com/pyinfra-dev/pyinfra",
+   "qualifying": 14
+  },
+  {
+   "path": "~/aimpg-study/axios",
+   "url": "https://github.com/axios/axios",
+   "qualifying": 8
+  },
+  {
+   "path": "~/aimpg-study/lint-staged",
+   "url": "https://github.com/lint-staged/lint-staged",
+   "qualifying": 10
+  },
+  {
+   "path": "~/aimpg-study/recharts",
+   "url": "https://github.com/recharts/recharts",
+   "qualifying": 14
+  },
+  {
+   "path": "~/aimpg-study/homebridge",
+   "url": "https://github.com/homebridge/homebridge",
+   "qualifying": 14
+  },
+  {
+   "path": "~/aimpg-study/litestar",
+   "url": "https://github.com/litestar-org/litestar",
+   "qualifying": 14
+  }
+ ],
+ "replaced": []
+}

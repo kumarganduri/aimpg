@@ -274,6 +274,79 @@ def _delegation(cfg: Path) -> dict:
             "worker_reports": [reports.get(i, "none") for i in sorted(handed, key=handed.get)]}
 
 
+# Did a worker change test files that were already there when it started (for example the planner's
+# acceptance tests)? Claude Code runs this small script before and after every hand-off; each time it
+# writes the hash of every test file in the workspace to a log in the run's config folder. Stdlib
+# only: it runs inside the sandbox. The agent could edit the log; like RTK's own counts, it is a
+# measurement of an honest run, not a guard.
+TEST_LOG = "aimpg-test-files.jsonl"
+_TEST_HOOK = '''import hashlib, json, os, re, sys, time
+TEST_FILE = re.compile(%(pattern)r)
+SKIP = {".git", ".venv", "node_modules", ".uv-cache", ".npm-cache", ".tmp", "__pycache__"}
+try:
+    event = json.load(sys.stdin)
+except Exception:
+    event = {}
+root = os.environ.get("AIMPG_WORK") or event.get("cwd") or os.getcwd()
+files = {}
+for folder, dirs, names in os.walk(root):
+    dirs[:] = [d for d in dirs if d not in SKIP]
+    for name in names:
+        rel = os.path.relpath(os.path.join(folder, name), root)
+        if TEST_FILE.search(rel.replace(os.sep, "/")):
+            try:
+                with open(os.path.join(folder, name), "rb") as fh:
+                    files[rel] = hashlib.sha256(fh.read()).hexdigest()
+            except OSError:
+                pass
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), %(log)r), "a") as out:
+    out.write(json.dumps({"when": sys.argv[1], "id": event.get("tool_use_id"), "ts": time.time(), "files": files}) + "\\n")
+'''
+
+
+def _test_hook_configure(cfg: Path) -> None:
+    """Install the test-file check into the run's throwaway config (never the user's)."""
+    from aimpg.replay.workspace import TEST_FILE
+
+    script = cfg / "aimpg_test_hook.py"
+    script.write_text(_TEST_HOOK % {"pattern": TEST_FILE.pattern, "log": TEST_LOG})
+    python = str(Path(sys.executable).resolve())
+
+    def hook(when: str) -> list:
+        return [{"matcher": "Agent|Task", "hooks": [{"type": "command", "command": f"'{python}' '{script}' {when}", "timeout": 60}]}]
+
+    settings = json.dumps({"hooks": {"PreToolUse": hook("before"), "PostToolUse": hook("after")}}, indent=1)
+    for base in (cfg, cfg / ".claude"):  # CLAUDE_CONFIG_DIR and HOME both point here
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "settings.json").write_text(settings)
+
+
+def _test_changes(cfg: Path) -> dict:
+    """From the hook's log: how many worker steps were checked, and which test files that existed
+    before a step were changed or deleted during it. Empty if the hook never ran."""
+    try:
+        rows = [json.loads(line) for line in (cfg / TEST_LOG).read_text().splitlines() if line.strip()]
+    except (OSError, ValueError):
+        return {}
+    changed, steps, before, last = set(), 0, {}, None
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("files"), dict):
+            continue
+        if row.get("when") == "before":
+            before[row.get("id")] = last = row["files"]
+        elif row.get("when") == "after":
+            start = before.get(row.get("id")) if row.get("id") in before else last  # by hand-off id when Claude Code gives one
+            if start is None:
+                continue
+            steps += 1
+            changed |= {name for name, digest in start.items() if row["files"].get(name) != digest}
+    return {"worker_steps_checked": steps, "test_files_changed_by_worker": sorted(changed)[:20]} if steps else {}
+
+
+def _planner_measure(cfg: Path) -> dict:
+    return {**_delegation(cfg), **_test_changes(cfg)}
+
+
 def planner(planner_model: str = "opus", worker_model: str = "haiku", *, name: str | None = None,
             prompt: str | None = None, agents: dict | None = None, worker_prompt: str | None = None) -> Setup:
     """Claude Code with `planner_model` as an orchestrator that plans and checks, and a `worker`
@@ -286,7 +359,7 @@ def planner(planner_model: str = "opus", worker_model: str = "haiku", *, name: s
     return Setup(name or f"planner@{planner_model}+{worker_model}", model=planner_id,
                  extra_args=["--append-system-prompt", prompt, "--agents", json.dumps(agents, sort_keys=True)],
                  spec={"agent": "claude", "model": planner_id, "append_prompt": prompt, "agents": agents},
-                 measure=_delegation)
+                 configure=_test_hook_configure, measure=_planner_measure)
 
 
 def codex(model: str | None = None) -> Setup:

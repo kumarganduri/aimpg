@@ -455,3 +455,90 @@ def test_study_select_passes_the_exclusions_and_its_own_folder_on(tmp_path, monk
     assert summary["repos"] == [{"path": str(repo), "url": "u", "qualifying": 6}]
     assert study_cli._select_all(plan) == 0 and "already selected: 6 qualifying" in capsys.readouterr().out
 
+
+# ------------------------------------------------------------------ did a worker change tests that were already there?
+
+def fire(cfg, work, when, tool_id="t1"):
+    import subprocess
+
+    settings = json.loads((cfg / "settings.json").read_text())
+    event = "PreToolUse" if when == "before" else "PostToolUse"
+    (group,) = settings["hooks"][event]
+    assert group["matcher"] == "Agent|Task" and group["hooks"][0]["command"].endswith(" " + when)
+    subprocess.run(group["hooks"][0]["command"], shell=True, input=json.dumps({"cwd": str(work), "tool_use_id": tool_id}), text=True, check=True)
+
+
+def test_test_file_check_sees_changed_and_deleted_tests_but_not_new_ones(tmp_path):
+    cfg, work = tmp_path / "cfg", tmp_path / "work"
+    cfg.mkdir()
+    for name, text in (("tests/test_a.py", "a"), ("tests/test_b.py", "b"), ("src/calc.py", "s"), ("src/calc.test.ts", "t"),
+                       ("node_modules/x/tests/t.js", "n"), (".venv/lib/test_x.py", "v")):
+        (work / name).parent.mkdir(parents=True, exist_ok=True)
+        (work / name).write_text(text)
+    setup = S.planner()
+    setup.configure(cfg)
+    assert (cfg / ".claude" / "settings.json").read_text() == (cfg / "settings.json").read_text()  # HOME and CLAUDE_CONFIG_DIR
+    assert S._test_changes(cfg) == {} and "worker_steps_checked" not in setup.measure(cfg)  # the hook never ran: not measured
+
+    fire(cfg, work, "before")
+    (work / "tests" / "test_new.py").write_text("the worker's own new test")  # adding tests is fine
+    (work / "src" / "calc.py").write_text("the change")
+    (work / "node_modules" / "x" / "tests" / "t.js").write_text("installed packages are not the project's tests")
+    fire(cfg, work, "after")
+    assert S._test_changes(cfg) == {"worker_steps_checked": 1, "test_files_changed_by_worker": []}
+
+    fire(cfg, work, "before", "t2")
+    (work / "tests" / "test_a.py").write_text("weakened")
+    (work / "tests" / "test_new.py").unlink()  # it existed before this step
+    (work / "src" / "calc.test.ts").write_text("weakened too")
+    fire(cfg, work, "after", "t2")
+    got = setup.measure(cfg)
+    assert got["worker_steps_checked"] == 2
+    assert got["test_files_changed_by_worker"] == ["src/calc.test.ts", "tests/test_a.py", "tests/test_new.py"]
+    assert got["delegations"] == 0  # the transcript counts are still there
+    first = json.loads((cfg / S.TEST_LOG).read_text().splitlines()[0])
+    assert set(first["files"]) == {"tests/test_a.py", "tests/test_b.py", "src/calc.test.ts"} and first["id"] == "t1"
+
+
+def test_test_file_check_pairs_overlapping_hand_offs_by_id_and_survives_a_broken_log(tmp_path):
+    def row(when, tool_id, files):
+        return json.dumps({"when": when, "id": tool_id, "ts": 0, "files": files})
+
+    lines = [row("before", "a", {"t.py": "1"}), row("before", "b", {"t.py": "1", "u.py": "1"}),
+             row("after", "a", {"t.py": "1", "u.py": "1"}),   # a's step changed nothing that existed when it started
+             row("after", "b", {"t.py": "2", "u.py": "1"}),   # b's step changed t.py
+             row("after", "zzz", {"t.py": "2", "u.py": "9"}),  # no id match: compared with the latest snapshot
+             json.dumps({"when": "after"}), json.dumps([1])]
+    (tmp_path / S.TEST_LOG).write_text("\n".join(lines) + "\n")
+    assert S._test_changes(tmp_path) == {"worker_steps_checked": 3, "test_files_changed_by_worker": ["t.py", "u.py"]}
+    (tmp_path / S.TEST_LOG).write_text("not json\n")
+    assert S._test_changes(tmp_path) == {}
+
+
+def test_report_shows_the_result_with_and_without_runs_where_a_worker_changed_tests():
+    def run(c, passed, changed, checked=1):
+        extra = {"delegations": 1, "worker_steps_checked": checked, "test_files_changed_by_worker": changed} if checked else {"delegations": 1}
+        return rec(c, "planner@opus+haiku", passed, 0.4, **extra)
+
+    records = [run("a", True, []), run("b", True, ["tests/test_a.py"]), run("c", False, ["tests/test_a.py"]), run("d", True, [], checked=0)]
+    text = study.render_extras(records, ["planner@opus+haiku"])
+    assert ("A worker changed test files that were there before its step in 2 of 3 checked runs; 1 of those passed the hidden tests. "
+            "Counting those as failures, the setup solved 2 of 4 runs, not 3.") in text
+    unchecked = study.render_extras([run("a", True, [], checked=0)], ["planner@opus+haiku"])
+    assert "The test-file check did not run" in unchecked
+
+
+# ------------------------------------------------------------------ the pilot stays out of the main sample
+
+def test_pilot_on_spare_commits_never_touches_the_main_sample(tmp_path, monkeypatch):
+    from aimpg.replay import study_cli
+
+    monkeypatch.setattr(study_cli, "STATE", tmp_path / "study")
+    repo = str(tmp_path / "calc")
+    plan = {"name": "r2", "commits_per_repo": 3, "repos": [{"path": repo}], "exclude_commits": [f"{9:040d}"], "pilot": "spare"}
+    select.save([commit(i, repo=repo) for i in (1, 2, 3, 9, 4, 5, 6)], study_cli._sel_dir(plan, repo) / "selected.jsonl")
+    assert [int(c.sha) for c in study_cli._selected(plan, repo, 3)] == [1, 2, 3]
+    assert [int(c.sha) for c in study_cli._spares(plan, repo, 2)] == [4, 5]  # the next ones, never an excluded commit
+    with pytest.raises(SystemExit, match="only 3 spare qualifying commits"):
+        study_cli._spares(plan, repo, 4)
+

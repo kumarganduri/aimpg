@@ -32,6 +32,8 @@ Optional, added for Report No. 2:
                                   the primary comparisons, between any two setups (default: every
                                   challenger against the baseline); primary: per_solved | tokens | per_attempt | solved
       "also": [{"challenger": "haiku", "baseline": "plain"}, ...]   reported the same way, but never a headline
+      "pilot": "spare"            the pilot runs on the first repo's next 2 qualifying commits after the
+                                  ones the study uses, so no pilot commit is in the main sample
       "prompts": {"planner:opus+haiku": {"planner": "prompts/planner.md", "worker": "prompts/worker.md"}}
                                   that planner setup's two prompts, from files next to the plan
                                   (published with it); without this, aimpg's first versions are used
@@ -231,6 +233,16 @@ def _selected(plan: dict, repo: str, n: int):
     return select.pick(commits, n, plan.get("multi_file_per_repo", 0))
 
 
+def _spares(plan: dict, repo: str, n: int):
+    """The pilot's commits when the plan says "pilot": "spare": the first n qualifying commits that the
+    main study does not use, so a pilot run never shows a main task's result early."""
+    main = {c.sha for c in _selected(plan, repo, plan["commits_per_repo"])}
+    spare = [c for c in select.load(_sel_dir(plan, repo) / "selected.jsonl") if c.sha not in main and c.sha not in _excluded(plan)]
+    if len(spare) < n:
+        raise SystemExit(f"{repo} has only {len(spare)} spare qualifying commits; the pilot needs {n}. Put a repo with spares first in the plan.")
+    return spare[:n]
+
+
 def _pairs(plan: dict, key: str) -> list[tuple[str, str, str]]:
     """(baseline, challenger, primary) setup names for the plan's `comparisons` or `also` list."""
     out = []
@@ -257,7 +269,7 @@ def _run(plan: dict, args) -> int:
     active = json.loads(chosen.read_text())["repos"]
     repos = active[:1] if args.pilot else active
     n, repeats = (2, 1) if args.pilot else (plan["commits_per_repo"], plan["repeats"])
-    chains = 1 if args.pilot else plan.get("chains_per_repo", 0)
+    chains = min(1, plan.get("chains_per_repo", 2)) if args.pilot else plan.get("chains_per_repo", 0)
     keys = {}
     for s in setups + [chain.FIRST]:
         if s.key_env and s.key_env not in keys:
@@ -265,7 +277,10 @@ def _run(plan: dict, args) -> int:
             if not value:
                 raise SystemExit(f"set {s.key_env} in your shell first (aimpg never stores it)")
             keys[s.key_env] = value
-    selected = {r["path"]: _selected(plan, r["path"], n) for r in repos}
+    if args.pilot and plan.get("pilot") == "spare":
+        selected = {r["path"]: _spares(plan, r["path"], n) for r in repos}
+    else:
+        selected = {r["path"]: _selected(plan, r["path"], n) for r in repos}
     n_runs = sum(len(c) for c in selected.values()) * repeats * len(setups) + len(repos) * chains * repeats * 3
     cap = (min(plan["cap_usd"], 15.0) if args.pilot else plan["cap_usd"])
     print(f"Study {plan['name']}{' (PILOT)' if args.pilot else ''}: {len(repos)} repos, {n_runs} agent runs, "

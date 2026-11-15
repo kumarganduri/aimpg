@@ -1,0 +1,156 @@
+{
+ "_draft": "Not frozen. Review PREREGISTRATION.draft.md first; this file becomes plan.json at the freeze.",
+ "name": "report-2",
+ "cutoff": "2026-07-01",
+ "commits_per_repo": 7,
+ "repeats": 3,
+ "task_mode": "hint",
+ "ask_status": true,
+ "pilot": "spare",
+ "baseline": "plain",
+ "challengers": [
+  "haiku",
+  "opus",
+  "planner:opus+haiku"
+ ],
+ "comparisons": [
+  {
+   "challenger": "planner:opus+haiku",
+   "baseline": "plain",
+   "primary": "per_solved"
+  },
+  {
+   "challenger": "planner:opus+haiku",
+   "baseline": "haiku",
+   "primary": "solved"
+  },
+  {
+   "challenger": "planner:opus+haiku",
+   "baseline": "opus",
+   "primary": "per_solved"
+  }
+ ],
+ "also": [
+  {
+   "challenger": "haiku",
+   "baseline": "plain",
+   "primary": "per_solved"
+  },
+  {
+   "challenger": "opus",
+   "baseline": "plain",
+   "primary": "per_solved"
+  }
+ ],
+ "prompts": {
+  "planner:opus+haiku": {
+   "planner": "prompts/planner.md",
+   "worker": "prompts/worker.md"
+  }
+ },
+ "chains_per_repo": 0,
+ "per_run_budget_usd": 2.0,
+ "cap_usd": 250,
+ "repos": [
+  {
+   "url": "https://github.com/Kludex/starlette",
+   "path": "~/aimpg-study/starlette"
+  },
+  {
+   "url": "https://github.com/pallets/click",
+   "path": "~/aimpg-study/click"
+  },
+  {
+   "url": "https://github.com/pyinfra-dev/pyinfra",
+   "path": "~/aimpg-study/pyinfra"
+  },
+  {
+   "url": "https://github.com/axios/axios",
+   "path": "~/aimpg-study/axios"
+  },
+  {
+   "url": "https://github.com/lint-staged/lint-staged",
+   "path": "~/aimpg-study/lint-staged"
+  },
+  {
+   "url": "https://github.com/recharts/recharts",
+   "path": "~/aimpg-study/recharts"
+  },
+  {
+   "url": "https://github.com/homebridge/homebridge",
+   "path": "~/aimpg-study/homebridge"
+  },
+  {
+   "url": "https://github.com/litestar-org/litestar",
+   "path": "~/aimpg-study/litestar"
+  }
+ ],
+ "reserve_repos": [
+  {
+   "url": "https://github.com/strawberry-graphql/strawberry",
+   "path": "~/aimpg-study/strawberry"
+  },
+  {
+   "url": "https://github.com/Kludex/uvicorn",
+   "path": "~/aimpg-study/uvicorn"
+  }
+ ],
+ "exclude_commits": [
+  "02c2c4f891d76b15712a9edd149a2d9f7978774f",
+  "051725fa7e0c69effc9107066d8791c5b99242c3",
+  "07c909f23f0f83b5ca137c167b9a134d66201f67",
+  "113cc549aed128f42571aaa80e3348fba67cd4b7",
+  "143fae391124da3cbae26350d15cb22a3a1f8174",
+  "19a0ae481a604c3a00ec75c6bb85af1146623ca8",
+  "2453f456ade2bda83ed6fbba91fe7b7224d8c2be",
+  "26112a19151f9678861d51ea7416e9f9bef24bbb",
+  "2b1d16c6beffe89c72bfed08e0db17d82dc6a3a8",
+  "2fa048ec943d9b40e404249c78d067a28ffa95cf",
+  "3495fba163dd61dea837cd557095df6c21515ac8",
+  "36a02ddc3972426e06aeccfa075ed597e7c2a884",
+  "37e8e1ad73a58c0b187716bd5172744ad50f36d1",
+  "38f8999a229610b36f39d11f67d80515a15c6330",
+  "3d253b4f17a5107e6f274ee5b2e96e03508dceb2",
+  "3ebc76240c835a07fc6af23cb10d41579371a08f",
+  "47382933d6d6bcb0f3a6b6104c48466545172a0a",
+  "4a4332235dfe805a515a0f58173555f6e407f50f",
+  "52a2a896cf8cf1fc91c9cd34ae61e8be6f6f5aac",
+  "553e77b3b3ab71457c417795c41285fba37b1608",
+  "556c0beb390ccd31cb1d0e7d04db233d7bff15b3",
+  "610522310a14223fd588c209536b5b712d1248d0",
+  "676799baa947b0e778c0f26242e0314696ca4ed1",
+  "6972c412adf4c29ddae3749c27f49a66af8cde0e",
+  "6d07038fad0b7438cc81f0c2d037cc17543829c2",
+  "78ae82cad482fe66a73fb1217f0a6609b3f998f6",
+  "7a0a3447f6ddd2c15438c5d098e289323f9f9556",
+  "82d2bec90c7927ea1e5ce7025fa9adca5de8aea2",
+  "86600d3b5dd071ad85a6de9f8293deed113468ae",
+  "8f00f8e627070fcdd086b1d6457acba22e82f690",
+  "92650d3ee3498b7afec7c621b98cbb75fbd3437a",
+  "93ba0075f4881b858b61f89a753c7c10e330027e",
+  "99b7cc62e0c2cb8d24e5f546b7e34e17496c265e",
+  "9b98b7f02921f59294171368d0e87dc6c3ce22c0",
+  "9c500db197859dba4a8db13fa8e7d2c55de8152c",
+  "9f9b149ea30287b4977b800a024ee68144b8c869",
+  "a7a1d4873f47eee566ed436046067dbf1a72a145",
+  "a85da2918eb540928b54bb3d57692efc8f2f83f1",
+  "a93b1c90d919542987cc38591d10eed949a345d0",
+  "adc95e2e291589a903468d969d7d355d69620f41",
+  "b07b8c61516307c6899ea16c8d2a00eaee3e3f84",
+  "bd4dcbf0ed22a655386a29ac98c5ed4296d6b354",
+  "bd70de14ee9dc29bfbb86ec1026933880cfd7dbc",
+  "c58eff4ccd80cf1e3336a2c558e4b0cb8e7197b7",
+  "d43432b0b64415468ba853e84557b6d662155475",
+  "d438d397c93c055c068a2f9bd84a2cf2a8c9c7b7",
+  "d934a47907276beb243611ae3183016872522fcb",
+  "dc0ef09da32c3b591ee1c7d2d33bb88f5dc8e020",
+  "e435384f36bdd310ae784d652e97a0383d1c52a7",
+  "f1dc9b630da61ee14e8b7580921a7d8f55dfa4ff",
+  "f2786e83fbd89862e19cb11578f4e1d638b3899c",
+  "f2c3ecb92d4cbaf48307c200f154e3e4859aa1d1",
+  "fb6b4731065f0e2ec456258b4c54a951456ad369",
+  "fbdd434028fe07ecf35084c945b43b938dfd639f",
+  "fe47b846f4e948bcc02f8336ea2189067147a1a6",
+  "ff60b43277c32a5b2f7589c917db16d8e043c0d4"
+ ]
+}
