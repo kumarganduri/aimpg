@@ -235,7 +235,9 @@ def _delegation(cfg: Path) -> dict:
 
     A planner told not to write code may still do it. These counts say how often, so a study can
     report the setup as it really behaved."""
-    delegations = main_edits = worker_edits = 0
+    from aimpg.replay.workspace import TEST_FILE
+
+    delegations = main_edits = main_code_edits = worker_edits = 0
     handed, reports = {}, {}  # hand-offs in order, and what each worker reported back
     for path in sorted((cfg / "projects").rglob("*.jsonl")) if (cfg / "projects").is_dir() else []:
         seen = set()
@@ -267,10 +269,15 @@ def _delegation(cfg: Path) -> dict:
                 elif block.get("name") in _EDIT_TOOLS:
                     worker_edits += side
                     main_edits += not side
+                    # a planner is expected to write tests; editing the code itself is doing the worker's job
+                    target = block.get("input") if isinstance(block.get("input"), dict) else {}
+                    name = str(target.get("file_path") or target.get("notebook_path") or "").rpartition("/work/")[2]
+                    main_code_edits += not side and not TEST_FILE.search(name)
     # what each worker said about its own result, in hand-off order: completed | partial | blocked | none
     # (none: no `Outcome:` line, or no report came back). Lets a study count how often the planner
     # caught a worker's false "completed".
-    return {"delegations": delegations, "orchestrator_edits": main_edits, "worker_edits": worker_edits,
+    return {"delegations": delegations, "orchestrator_edits": main_edits, "orchestrator_code_edits": main_code_edits,
+            "worker_edits": worker_edits,
             "worker_reports": [reports.get(i, "none") for i in sorted(handed, key=handed.get)]}
 
 

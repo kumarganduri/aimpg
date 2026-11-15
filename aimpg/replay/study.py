@@ -353,7 +353,7 @@ def delegation(records: list[Record]) -> dict[str, dict]:
                 row["of_those_failed"] += 1
                 row["of_those_planner_said_done"] += r.extra.get("claimed") == "done"
         row["delegated"] += r.extra["delegations"] > 0
-        row["orchestrator_edited"] += r.extra.get("orchestrator_edits", 0) > 0
+        row["orchestrator_edited"] += r.extra.get("orchestrator_code_edits", r.extra.get("orchestrator_edits", 0)) > 0  # code, not tests
         row["usd"] += r.cost_usd
         for model, part in (r.extra.get("by_model") or {}).items():
             row["usd_by_model"][model] += part.get("usd", 0.0)
@@ -390,9 +390,9 @@ def render_extras(records: list[Record], setups: list[str]) -> str:
                          f"{c['said_not_done_but_passed']} | {c['no_status_line']} |")
         parts.append("\n".join(lines))
     for s, d in delegation(records).items():
-        share = ", ".join(f"{m} {usd / d['usd']:.0%}" for m, usd in sorted(d["usd_by_model"].items())) if d["usd"] else "n/a"
-        text = (f"{s}: the orchestrator delegated in {d['delegated']} of {d['runs']} runs and edited files itself in "
-                f"{d['orchestrator_edited']}. Cost by model: {share}.")
+        share = ", ".join(f"{m} {usd / d['usd']:.0%}" for m, usd in sorted(d["usd_by_model"].items())) if d["usd"] and d["usd_by_model"] else ""
+        text = (f"{s}: the orchestrator delegated in {d['delegated']} of {d['runs']} runs and edited code itself in "
+                f"{d['orchestrator_edited']}. " + (f"Cost by model: {share}." if share else "Every request ran on the orchestrator's model."))
         if d["worker_said_completed"]:
             text += (f" The worker's last report said completed in {d['worker_said_completed']} runs; the hidden tests failed in "
                      f"{d['of_those_failed']} of those, and the planner still said done in {d['of_those_planner_said_done']} of them.")
