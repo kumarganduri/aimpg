@@ -551,3 +551,25 @@ def test_pilot_on_spare_commits_never_touches_the_main_sample(tmp_path, monkeypa
     with pytest.raises(SystemExit, match="only 3 spare qualifying commits"):
         study_cli._spares(plan, repo, 4)
 
+
+def test_a_further_pilot_runs_only_named_spare_commits_in_its_own_folder(tmp_path, monkeypatch):
+    from aimpg.replay import study_cli
+
+    monkeypatch.setattr(study_cli, "STATE", tmp_path / "study")
+    a, b = str(tmp_path / "calc"), str(tmp_path / "shop")
+    plan = {"name": "r2", "commits_per_repo": 2, "repos": [{"path": a}, {"path": b}], "exclude_commits": [],
+            "pilot_commits": [f"{4:040d}", f"{13:040d}"], "pilot_name": "pilot-2"}
+    select.save([commit(i, repo=a) for i in (1, 2, 3, 4)], study_cli._sel_dir(plan, a) / "selected.jsonl")
+    select.save([commit(i, repo=b) for i in (11, 12, 13)], study_cli._sel_dir(plan, b) / "selected.jsonl")
+    active = [{"path": a}, {"path": b}]
+    got = study_cli._pilot_commits(plan, active)
+    assert {repo: [int(c.sha) for c in cs] for repo, cs in got.items()} == {a: [4], b: [13]}
+    assert study_cli._pilot_folder(plan) == "pilot-2"
+    assert study_cli._pilot_folder({"pilot_name": "ignored-without-commits"}) == "pilot"
+    with pytest.raises(SystemExit, match="one of the main study's tasks"):
+        study_cli._pilot_commits(dict(plan, pilot_commits=[f"{2:040d}"]), active)
+    with pytest.raises(SystemExit, match="not a qualifying commit"):
+        study_cli._pilot_commits(dict(plan, pilot_commits=["f" * 40]), active)
+    with pytest.raises(SystemExit, match="must start with 'pilot'"):
+        study_cli._pilot_folder(dict(plan, pilot_name="../runs"))
+

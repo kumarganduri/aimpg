@@ -7,6 +7,11 @@
  "task_mode": "hint",
  "ask_status": true,
  "pilot": "spare",
+ "pilot_commits": [
+  "8feafc64083403ff7fb7872248b7165968c91561",
+  "a5d7737d8965702dc14e590658c20bda6ccfb9af"
+ ],
+ "pilot_name": "pilot-2",
  "baseline": "plain",
  "challengers": [
   "haiku",

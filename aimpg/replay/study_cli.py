@@ -34,6 +34,9 @@ Optional, added for Report No. 2:
       "also": [{"challenger": "haiku", "baseline": "plain"}, ...]   reported the same way, but never a headline
       "pilot": "spare"            the pilot runs on the first repo's next 2 qualifying commits after the
                                   ones the study uses, so no pilot commit is in the main sample
+      "pilot_commits": ["<sha>", ...], "pilot_name": "pilot-2"
+                                  a further pilot on these spare commits (any of the plan's repos),
+                                  with its results in a folder of its own
       "prompts": {"planner:opus+haiku": {"planner": "prompts/planner.md", "worker": "prompts/worker.md"}}
                                   that planner setup's two prompts, from files next to the plan
                                   (published with it); without this, aimpg's first versions are used
@@ -243,6 +246,33 @@ def _spares(plan: dict, repo: str, n: int):
     return spare[:n]
 
 
+def _pilot_folder(plan: dict) -> str:
+    import re
+
+    name = plan.get("pilot_name", "pilot") if plan.get("pilot_commits") else "pilot"
+    if not isinstance(name, str) or not re.fullmatch(r"pilot[\w.\-]{0,30}", name):
+        raise SystemExit("pilot_name must start with 'pilot' and use letters, digits, . _ - only (it becomes a folder)")
+    return name
+
+
+def _pilot_commits(plan: dict, active: list[dict]) -> dict:
+    """repo path -> the plan's named pilot commits in it. Each must be a qualifying commit that the
+    main study does not use, so a pilot never shows a main task's result early."""
+    wanted = list(plan["pilot_commits"])
+    found: dict[str, list] = {}
+    for r in active:
+        main = {c.sha for c in _selected(plan, r["path"], plan["commits_per_repo"])}
+        for c in select.load(_sel_dir(plan, r["path"]) / "selected.jsonl"):
+            if c.sha in wanted:
+                if c.sha in main or c.sha in _excluded(plan):
+                    raise SystemExit(f"pilot_commits: {c.sha[:10]} is one of the main study's tasks; a pilot uses spare commits only")
+                found.setdefault(r["path"], []).append(c)
+                wanted.remove(c.sha)
+    if wanted:
+        raise SystemExit(f"pilot_commits: {str(wanted[0])[:10]} is not a qualifying commit of any repo in the study (use full commit ids)")
+    return found
+
+
 def _pairs(plan: dict, key: str) -> list[tuple[str, str, str]]:
     """(baseline, challenger, primary) setup names for the plan's `comparisons` or `also` list."""
     out = []
@@ -267,7 +297,8 @@ def _run(plan: dict, args) -> int:
     if not chosen.exists():
         raise SystemExit("run `aimpg study select` first")
     active = json.loads(chosen.read_text())["repos"]
-    repos = active[:1] if args.pilot else active
+    named = _pilot_commits(plan, active) if args.pilot and plan.get("pilot_commits") else None
+    repos = [r for r in active if r["path"] in named] if named else active[:1] if args.pilot else active
     n, repeats = (2, 1) if args.pilot else (plan["commits_per_repo"], plan["repeats"])
     chains = min(1, plan.get("chains_per_repo", 2)) if args.pilot else plan.get("chains_per_repo", 0)
     keys = {}
@@ -277,7 +308,9 @@ def _run(plan: dict, args) -> int:
             if not value:
                 raise SystemExit(f"set {s.key_env} in your shell first (aimpg never stores it)")
             keys[s.key_env] = value
-    if args.pilot and plan.get("pilot") == "spare":
+    if named:
+        selected = named
+    elif args.pilot and plan.get("pilot") == "spare":
         selected = {r["path"]: _spares(plan, r["path"], n) for r in repos}
     else:
         selected = {r["path"]: _selected(plan, r["path"], n) for r in repos}
@@ -285,7 +318,8 @@ def _run(plan: dict, args) -> int:
     cap = (min(plan["cap_usd"], 15.0) if args.pilot else plan["cap_usd"])
     print(f"Study {plan['name']}{' (PILOT)' if args.pilot else ''}: {len(repos)} repos, {n_runs} agent runs, "
           f"setups {', '.join(s.name for s in setups)}, {chains} fresh-session pairs per repo, task mode {plan.get('task_mode', 'hint')}")
-    out_dir = _out(plan) / ("pilot" if args.pilot else "runs")
+    pilot_folder = _pilot_folder(plan)
+    out_dir = _out(plan) / (pilot_folder if args.pilot else "runs")
     done_runs = sum(len(runner.completed(out_dir / f"{Path(r['path']).name}.jsonl")) for r in repos) if out_dir.exists() else 0
     if done_runs:
         print(f"{done_runs} of those runs are already done (kept); only the rest will run.")
@@ -294,7 +328,7 @@ def _run(plan: dict, args) -> int:
     if not args.yes and input("Spend up to that on your API keys? [y/N] ").strip().lower() != "y":
         print("Stopped. Nothing was spent.")
         return 1
-    out = _out(plan) / ("pilot" if args.pilot else "runs")
+    out = _out(plan) / (pilot_folder if args.pilot else "runs")
     out.mkdir(exist_ok=True)
     cfg = runner.Config(model="claude-sonnet-5-5", per_run_budget_usd=plan.get("per_run_budget_usd", 2.0), total_cap_usd=cap,
                         api_key=keys.get("ANTHROPIC_API_KEY", ""), task_mode=plan.get("task_mode", "hint"), keys=keys,
