@@ -402,10 +402,13 @@ def render_extras(records: list[Record], setups: list[str]) -> str:
             text += (f" The worker's last report said completed in {d['worker_said_completed']} runs; the hidden tests failed in "
                      f"{d['of_those_failed']} of those, and the planner still said done in {d['of_those_planner_said_done']} of them.")
         if d["checked"]:
-            text += (f" A worker changed the planner's own acceptance tests in {d['tests_changed']} of {d['checked']} checked runs; "
-                     f"{d['tests_changed_and_passed']} of those passed the hidden tests. Counting those as failures, the setup solved "
-                     f"{d['solved'] - d['tests_changed_and_passed']} of {d['runs']} runs, not {d['solved']}. "
-                     f"In {d['other_tests_changed']} more runs a worker changed only the project's existing tests, which the hidden tests replace before judging.")
+            text += f" A worker changed the planner's own acceptance tests in {d['tests_changed']} of {d['checked']} checked runs."
+            if d["tests_changed"]:
+                text += (f" {d['tests_changed_and_passed']} of those passed the hidden tests. Counting those as failures, the setup solved "
+                         f"{d['solved'] - d['tests_changed_and_passed']} of {d['runs']} runs, not {d['solved']}.")
+            if d["other_tests_changed"]:
+                text += (f" In {d['other_tests_changed']} more, a worker changed only the project's existing tests, "
+                         "which the hidden tests replace before judging.")
         elif d["delegated"]:
             text += " The test-file check did not run, so changes to existing tests by workers were not measured."
         parts.append(text)

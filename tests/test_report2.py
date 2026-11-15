@@ -541,9 +541,11 @@ def test_report_shows_the_result_with_and_without_runs_where_a_worker_changed_te
     records = [run("a", True, []), run("b", True, ["tests/test_a.py"]), run("c", False, ["tests/test_a.py"]), run("d", True, [], checked=0),
                run("e", True, ["tests/test_existing.py"], own=[])]  # like pilot 2: only a project test was updated
     text = study.render_extras(records, ["planner@opus+haiku"])
-    assert ("A worker changed the planner's own acceptance tests in 2 of 4 checked runs; 1 of those passed the hidden tests. "
-            "Counting those as failures, the setup solved 3 of 5 runs, not 4. In 1 more runs a worker changed only the project's "
+    assert ("A worker changed the planner's own acceptance tests in 2 of 4 checked runs. 1 of those passed the hidden tests. "
+            "Counting those as failures, the setup solved 3 of 5 runs, not 4. In 1 more, a worker changed only the project's "
             "existing tests, which the hidden tests replace before judging.") in text
+    clean = study.render_extras([run("a", True, [])], ["planner@opus+haiku"])
+    assert "acceptance tests in 0 of 1 checked runs." in clean and "Counting those as failures" not in clean
     unchecked = study.render_extras([run("a", True, [], checked=0)], ["planner@opus+haiku"])
     assert "The test-file check did not run" in unchecked
 
