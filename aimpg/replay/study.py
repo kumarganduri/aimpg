@@ -337,8 +337,14 @@ def delegation(records: list[Record]) -> dict[str, dict]:
     for r in records:
         if "delegations" not in r.extra:
             continue
-        row = out.setdefault(r.setup, {"runs": 0, "delegated": 0, "orchestrator_edited": 0, "usd": 0.0, "usd_by_model": defaultdict(float)})
+        row = out.setdefault(r.setup, {"runs": 0, "delegated": 0, "orchestrator_edited": 0, "usd": 0.0, "usd_by_model": defaultdict(float),
+                                       "worker_said_completed": 0, "of_those_failed": 0, "of_those_planner_said_done": 0})
         row["runs"] += 1
+        if (r.extra.get("worker_reports") or ["none"])[-1] == "completed":  # the worker's last report
+            row["worker_said_completed"] += 1
+            if not r.passed:  # a false "completed": did the planner pass it on as done?
+                row["of_those_failed"] += 1
+                row["of_those_planner_said_done"] += r.extra.get("claimed") == "done"
         row["delegated"] += r.extra["delegations"] > 0
         row["orchestrator_edited"] += r.extra.get("orchestrator_edits", 0) > 0
         row["usd"] += r.cost_usd
@@ -378,7 +384,11 @@ def render_extras(records: list[Record], setups: list[str]) -> str:
         parts.append("\n".join(lines))
     for s, d in delegation(records).items():
         share = ", ".join(f"{m} {usd / d['usd']:.0%}" for m, usd in sorted(d["usd_by_model"].items())) if d["usd"] else "n/a"
-        parts.append(f"{s}: the orchestrator delegated in {d['delegated']} of {d['runs']} runs and edited files itself in "
-                     f"{d['orchestrator_edited']}. Cost by model: {share}.")
+        text = (f"{s}: the orchestrator delegated in {d['delegated']} of {d['runs']} runs and edited files itself in "
+                f"{d['orchestrator_edited']}. Cost by model: {share}.")
+        if d["worker_said_completed"]:
+            text += (f" The worker's last report said completed in {d['worker_said_completed']} runs; the hidden tests failed in "
+                     f"{d['of_those_failed']} of those, and the planner still said done in {d['of_those_planner_said_done']} of them.")
+        parts.append(text)
     return "\n\n".join(parts)
 

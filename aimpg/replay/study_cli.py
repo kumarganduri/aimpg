@@ -32,6 +32,9 @@ Optional, added for Report No. 2:
                                   the primary comparisons, between any two setups (default: every
                                   challenger against the baseline); primary: per_solved | tokens | per_attempt | solved
       "also": [{"challenger": "haiku", "baseline": "plain"}, ...]   reported the same way, but never a headline
+      "prompts": {"planner:opus+haiku": {"planner": "prompts/planner.md", "worker": "prompts/worker.md"}}
+                                  that planner setup's two prompts, from files next to the plan
+                                  (published with it); without this, aimpg's first versions are used
 
 The report then also shows results by pre-set task groups (description under or over 15 words;
 30 or fewer changed lines of code, or more), each primary comparison within those groups, an
@@ -85,7 +88,39 @@ def load_plan(path: Path) -> dict:
             raise SystemExit(f"plan is missing {key!r}")
     for r in plan["repos"]:
         r["path"] = str(Path(r["path"]).expanduser().resolve())
+    plan["_dir"] = str(path.resolve().parent)  # prompt files are named relative to the plan
+    for name in plan.get("prompts") or {}:
+        if name not in [plan["baseline"], *plan["challengers"]]:
+            raise SystemExit(f"prompts: {name!r} is not one of the plan's setups")
+        _setup(plan, name)  # fail now, for free, on a missing or misnamed prompt file
     return plan
+
+
+def _setup(plan: dict, name: str):
+    """The setup a plan means by `name`: like setup_from, plus the plan's own prompts for a planner."""
+    from aimpg.replay import setups as S
+
+    setup = setup_from(name)
+    custom = (plan.get("prompts") or {}).get(name)
+    if custom is None:
+        return setup
+    if "agents" not in setup.spec:
+        raise SystemExit(f"prompts: {name!r} is not a planner setup")
+    if not isinstance(custom, dict) or set(custom) - {"planner", "worker"} or not custom:
+        raise SystemExit(f"prompts for {name!r}: give a file for \"planner\", \"worker\" or both")
+    texts = {}
+    for role, rel in custom.items():
+        file = (Path(plan.get("_dir", ".")) / str(rel)).resolve()
+        if Path(plan.get("_dir", ".")).resolve() not in file.parents:
+            raise SystemExit(f"prompts: {rel!r} must be a file in the plan's folder (it is published with the plan)")
+        try:
+            texts[role] = file.read_text().strip()
+        except OSError as exc:
+            raise SystemExit(f"prompts: can't read {file}: {exc}") from None
+        if not texts[role]:
+            raise SystemExit(f"prompts: {file} is empty")
+    models = (name.partition(":")[2] or "opus+haiku").split("+")
+    return S.planner(*models, prompt=texts.get("planner"), worker_prompt=texts.get("worker"))
 
 
 def _out(plan: dict) -> Path:
@@ -210,8 +245,8 @@ def _pairs(plan: dict, key: str) -> list[tuple[str, str, str]]:
 
 
 def _setups(plan: dict):
-    base = setup_from(plan["baseline"])
-    return [base, *[setup_from(c) for c in plan["challengers"]]]
+    base = _setup(plan, plan["baseline"])
+    return [base, *[_setup(plan, c) for c in plan["challengers"]]]
 
 
 def _run(plan: dict, args) -> int:

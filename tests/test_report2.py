@@ -160,6 +160,60 @@ def test_planner_behaviour_is_reported_as_it_really_was():
                rec("b", "planner@opus+haiku", False, 0.4, delegations=0, orchestrator_edits=2, worker_edits=0, by_model=by)]
     assert ("planner@opus+haiku: the orchestrator delegated in 1 of 2 runs and edited files itself in 1. "
             "Cost by model: claude-haiku-5-5 25%, claude-opus-5-5 75%.") in study.render_extras(records, ["planner@opus+haiku"])
+    assert "worker's last report" not in study.render_extras(records, ["planner@opus+haiku"])  # no worker reported an outcome
+
+
+def test_how_often_the_planner_caught_a_workers_false_completed():
+    def run(c, passed, reports, claimed):
+        return rec(c, "planner@opus+haiku", passed, 0.4, delegations=len(reports), worker_reports=reports, claimed=claimed)
+
+    records = [run("a", True, ["partial", "completed"], "done"),   # true
+               run("b", False, ["completed"], "done"),              # false, and the planner passed it on
+               run("c", False, ["completed"], "not_done"),          # false, and the planner caught it
+               run("d", False, ["completed", "blocked"], "done"),   # the last report counts: not a "completed"
+               run("e", False, [], "done")]
+    assert ("The worker's last report said completed in 3 runs; the hidden tests failed in 2 of those, "
+            "and the planner still said done in 1 of them.") in study.render_extras(records, ["planner@opus+haiku"])
+
+
+def test_a_plan_can_carry_its_own_planner_and_worker_prompts(tmp_path):
+    from aimpg.replay import study_cli
+
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "planner.md").write_text("You are the planner.\n\n## 1. Understand\n")
+    (tmp_path / "prompts" / "worker.md").write_text("You implement one bounded change.\n")
+    plan = {"name": "r2", "cutoff": "2026-07-01", "commits_per_repo": 1, "repeats": 1, "baseline": "plain",
+            "challengers": ["haiku", "planner:opus+haiku"], "repos": [],
+            "prompts": {"planner:opus+haiku": {"planner": "prompts/planner.md", "worker": "prompts/worker.md"}}}
+    file = tmp_path / "plan.json"
+    file.write_text(json.dumps(plan))
+    loaded = study_cli.load_plan(file)
+    plain, haiku, planner = study_cli._setups(loaded)
+    assert (plain.name, haiku.name, planner.name) == ("claude-code", "claude-code@haiku", "planner@opus+haiku")
+    argv = planner.argv("task", "m", 1.0, tmp_path)
+    assert argv[argv.index("--append-system-prompt") + 1] == "You are the planner.\n\n## 1. Understand"
+    worker = json.loads(argv[argv.index("--agents") + 1])["worker"]
+    assert worker["prompt"] == "You implement one bounded change." and worker["model"] == "claude-haiku-5-5"
+    assert planner.spec["append_prompt"].startswith("You are the planner.")  # what a record would say was run
+
+    only_worker = dict(plan, prompts={"planner:opus+haiku": {"worker": "prompts/worker.md"}})
+    file.write_text(json.dumps(only_worker))
+    argv = study_cli._setups(study_cli.load_plan(file))[2].argv("task", "m", 1.0, tmp_path)
+    assert argv[argv.index("--append-system-prompt") + 1] == S.PLANNER_PROMPT  # the other one stays aimpg's first version
+
+    (tmp_path.parent / "outside.md").write_text("x")
+    for bad, message in (({"planner:opus+haiku": {"planner": "prompts/missing.md"}}, "can't read"),
+                         ({"planner:opus+haiku": {"planner": "../outside.md"}}, "in the plan's folder"),
+                         ({"planner:opus+haiku": {"orchestrator": "prompts/planner.md"}}, "\"planner\", \"worker\" or both"),
+                         ({"haiku": {"planner": "prompts/planner.md"}}, "not a planner setup"),
+                         ({"planner:opus+sonnet": {"planner": "prompts/planner.md"}}, "not one of the plan's setups")):
+        file.write_text(json.dumps(dict(plan, prompts=bad)))
+        with pytest.raises(SystemExit, match=message):
+            study_cli.load_plan(file)
+    (tmp_path / "prompts" / "planner.md").write_text("  \n")
+    file.write_text(json.dumps(plan))
+    with pytest.raises(SystemExit, match="is empty"):
+        study_cli.load_plan(file)
 
 
 # ------------------------------------------------------------------ planner with a worker
@@ -214,12 +268,20 @@ def test_delegation_is_counted_from_the_transcripts(tmp_path):
         return {"type": "assistant", "isSidechain": side,
                 "message": {"content": [{"type": "tool_use", "id": i, "name": n} for i, n in tools] + [{"type": "text", "text": "x"}]}}
 
+    def result(tool_id, content, side=False):
+        return {"type": "user", "isSidechain": side, "message": {"content": [{"type": "tool_result", "tool_use_id": tool_id, "content": content}]}}
+
     rows = [row(False, ("t1", "Read"), ("t2", "Agent")), row(False, ("t2", "Agent")),  # repeated row: counted once
-            row(True, ("t3", "Edit"), ("t4", "Write")), row(False, ("t5", "Edit")), row(False, ("t6", "Task")),
+            result("t1", "Outcome: completed"),  # a Read's result, not a worker's report
+            row(True, ("t3", "Edit"), ("t4", "Write")),
+            result("t2", [{"type": "text", "text": "```text\nOutcome: partial\n```\nlater:\n**Outcome:** completed\nVerification: ..."}]),
+            row(False, ("t5", "Edit")), row(False, ("t6", "Task")), result("t6", "I changed two files and it works."),
+            row(False, ("t8", "Agent")),  # no report came back
             {"type": "user", "message": {"content": [{"type": "tool_use", "id": "t7", "name": "Edit"}]}}, "broken"]
     (folder / "s.jsonl").write_text("".join((json.dumps(r) if isinstance(r, dict) else r) + "\n" for r in rows))
-    assert S._delegation(tmp_path) == {"delegations": 2, "orchestrator_edits": 1, "worker_edits": 2}
-    assert S._delegation(tmp_path / "none") == {"delegations": 0, "orchestrator_edits": 0, "worker_edits": 0}
+    assert S._delegation(tmp_path) == {"delegations": 3, "orchestrator_edits": 1, "worker_edits": 2,
+                                       "worker_reports": ["completed", "none", "none"]}  # the last Outcome line of each report
+    assert S._delegation(tmp_path / "none") == {"delegations": 0, "orchestrator_edits": 0, "worker_edits": 0, "worker_reports": []}
 
 
 def test_study_report_prints_the_group_tables_from_result_files(tmp_path, capsys, monkeypatch):
