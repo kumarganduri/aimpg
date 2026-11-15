@@ -18,7 +18,7 @@ So an Opus planner is most likely to help where the description is thin: it has 
 - **Sonnet alone:** plain Claude Code on Claude Sonnet 5.5 (`plain`).
 - **Haiku alone:** Claude Code on Claude Haiku 5.5 (`haiku`).
 - **Opus alone:** Claude Code on Claude Opus 5.5 (`opus`).
-- **Planner with worker:** Claude Code on Opus 5.5 with an added planner prompt, and a `worker` sub-agent on Haiku 5.5 with its own prompt (`planner:opus+haiku`). The two prompts are the ones GitHub user pettykng runs daily, posted for this study on 2026-11-14 and used unchanged. They are published with the plan (`prompts/planner.md`, `prompts/worker.md`), under MIT, with the author's agreement. In short: the planner works out what the task means, writes acceptance tests first, briefs the worker, checks the result itself, and sends repairs back to the same worker.
+- **Planner with worker:** Claude Code on Opus 5.5 with an added planner prompt, and a `worker` sub-agent on Haiku 5.5 with its own prompt (`planner:opus+haiku`). The two prompts are the ones GitHub user pettykng runs daily, posted for this study on 2026-11-14. The worker prompt is used unchanged. The planner prompt has three changes made after pilot 1, in the author's wording (see "Pilots" below and `prompts/SOURCE.md`). They are published with the plan (`prompts/planner.md`, `prompts/worker.md`), under MIT, with the author's agreement. In short: the planner works out what the task means, writes acceptance tests first, briefs the worker, checks the result itself, and sends repairs back to the same worker.
 - **Prompt review:** the prompts stay open for comments in aimpg discussion #2 until **2026-11-21**.
 - **Versions recorded per run:** the versions of every tool and model.
 
@@ -67,8 +67,21 @@ As in Report No. 1: a finding is stated only if its Holm-adjusted p is below 0.0
 - As in Report No. 1: a harness error is retried once and then excludes the commit for every setup; account errors are redone.
 - **Budget:** the total cap is set after the pilot, from the planner's measured cost, and written here before the freeze. If it's reached, everything finished is reported and marked incomplete.
 
-## Pilot
-1 repo x 2 commits x 1 repeat, all 4 setups (8 runs, about $2). It runs on starlette's 8th and 9th qualifying commits, which the main study does not use. It checks that the worker really runs on Haiku 5.5 (from the cost split by model), that the orchestrator delegates, and what a planner run costs. It also checks that the test-file hashing runs. The worker's model is read from the model named in each API response, not from anything the worker says. Pilot runs are not part of the results and are published separately. Any harness change the pilot leads to is listed here before the freeze.
+## Pilots
+Pilot runs are not part of the results and are published separately (`pilot/`). Every pilot commit is a spare qualifying commit that the main study does not use. The worker's model is read from the model named in each API response.
+
+**Pilot 1 (2026-11-15, 8 runs, $1.51):** starlette's 8th and 9th qualifying commits, all 4 setups, 1 repeat.
+- No setup solved either task. Both descriptions have 9 words, and the hidden tests expect exact header names and order.
+- The planner handed nothing to the worker in either run: it wrote its acceptance tests and made the change itself.
+- Cost per run: Sonnet $0.08, Haiku $0.02, Opus $0.28, planner $0.38.
+- 7 of 8 runs ended with `STATUS: DONE` while the hidden tests failed.
+
+**Changes after pilot 1:**
+- *Planner prompt* (by its author, pettykng): the worker always writes the first version of the change, and the planner may make a small repair only after the worker has reported; and if the planner had to choose one reading of an unclear task, it must not call the task solved and ends with `STATUS: NOT DONE`. The author notes the first change is stricter than their day-to-day use.
+- *What this means for the "done" counts:* the planner's prompt now names the status line that the study measures, and the single-model setups get no such instruction. The false-"done" counts are therefore reported per setup as descriptions, not as a like-for-like comparison between the planner and the other setups. The primary comparisons (hidden tests and cost) are not affected.
+- *Harness:* the report counts only the planner's edits to non-test files as "edited code itself" (writing tests is what its prompt asks for).
+
+**Pilot 2 (planned, 8 runs, about $2):** one larger change with a short description (starlette 8feafc64: 6 words, 38 changed lines) and one small change with a long description (recharts a5d7737d: 406 words, 12 changed lines), all 4 setups, 1 repeat. Chosen by rule: the first spare commit in the plan's repo order with more than 30 changed lines, and the first with 50 words or more and 30 or fewer changed lines. It checks that the planner now hands work to the worker, that the worker runs on Haiku 5.5, that the test-file hashing runs, and what a run with a worker costs. The prompts are fixed after pilot 2. If the new `NOT DONE` wording makes the planner call solved tasks not done, its author prefers to soften it; any such change is listed here before the freeze.
 
 ## Cost estimate
 From Report No. 1's real cost per attempt: Sonnet $0.10, Haiku $0.02, Opus $0.31. With 168 runs per setup that is about $17, $3 and $52. The planner setup is unknown until the pilot; between Sonnet's and 1.5 times Opus's cost per run it would be $17 to $80. Total: roughly $90 to $150.
