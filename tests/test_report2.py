@@ -158,8 +158,13 @@ def test_planner_behaviour_is_reported_as_it_really_was():
     by = {"claude-opus-5-5": {"requests": 4, "usd": 0.3}, "claude-haiku-5-5": {"requests": 9, "usd": 0.1}}
     records = [rec("a", "planner@opus+haiku", True, 0.4, delegations=1, orchestrator_edits=0, worker_edits=3, by_model=by),
                rec("b", "planner@opus+haiku", False, 0.4, delegations=0, orchestrator_edits=2, worker_edits=0, by_model=by)]
-    assert ("planner@opus+haiku: the orchestrator delegated in 1 of 2 runs and edited files itself in 1. "
+    assert ("planner@opus+haiku: the orchestrator delegated in 1 of 2 runs and edited code itself in 1. "
             "Cost by model: claude-haiku-5-5 25%, claude-opus-5-5 75%.") in study.render_extras(records, ["planner@opus+haiku"])
+    # what the first pilot looked like: no hand-off, the planner wrote tests and the code, everything on one model
+    alone = [rec("a", "planner@opus+haiku", False, 0.38, delegations=0, orchestrator_edits=3, orchestrator_code_edits=2, worker_edits=0),
+             rec("b", "planner@opus+haiku", False, 0.38, delegations=0, orchestrator_edits=2, orchestrator_code_edits=0, worker_edits=0)]
+    assert ("planner@opus+haiku: the orchestrator delegated in 0 of 2 runs and edited code itself in 1. "
+            "Every request ran on the orchestrator's model.") in study.render_extras(alone, ["planner@opus+haiku"])
     assert "worker's last report" not in study.render_extras(records, ["planner@opus+haiku"])  # no worker reported an outcome
 
 
@@ -265,8 +270,10 @@ def test_delegation_is_counted_from_the_transcripts(tmp_path):
     folder.mkdir(parents=True)
 
     def row(side, *tools):
-        return {"type": "assistant", "isSidechain": side,
-                "message": {"content": [{"type": "tool_use", "id": i, "name": n} for i, n in tools] + [{"type": "text", "text": "x"}]}}
+        return {"type": "assistant", "isSidechain": side, "message": {"content": [
+            {"type": "tool_use", "id": i, "name": n, "input": {"file_path": PATHS.get(i, "")}} for i, n in tools] + [{"type": "text", "text": "x"}]}}
+
+    PATHS = {"t5": "/tmp/runs/x/work/src/calc.py", "t9": "/tmp/runs/x/work/tests/test_calc.py"}
 
     def result(tool_id, content, side=False):
         return {"type": "user", "isSidechain": side, "message": {"content": [{"type": "tool_result", "tool_use_id": tool_id, "content": content}]}}
@@ -275,13 +282,15 @@ def test_delegation_is_counted_from_the_transcripts(tmp_path):
             result("t1", "Outcome: completed"),  # a Read's result, not a worker's report
             row(True, ("t3", "Edit"), ("t4", "Write")),
             result("t2", [{"type": "text", "text": "```text\nOutcome: partial\n```\nlater:\n**Outcome:** completed\nVerification: ..."}]),
-            row(False, ("t5", "Edit")), row(False, ("t6", "Task")), result("t6", "I changed two files and it works."),
+            row(False, ("t5", "Edit")), row(False, ("t9", "Write")),  # the planner edits code once and writes a test once
+            row(False, ("t6", "Task")), result("t6", "I changed two files and it works."),
             row(False, ("t8", "Agent")),  # no report came back
             {"type": "user", "message": {"content": [{"type": "tool_use", "id": "t7", "name": "Edit"}]}}, "broken"]
     (folder / "s.jsonl").write_text("".join((json.dumps(r) if isinstance(r, dict) else r) + "\n" for r in rows))
-    assert S._delegation(tmp_path) == {"delegations": 3, "orchestrator_edits": 1, "worker_edits": 2,
+    assert S._delegation(tmp_path) == {"delegations": 3, "orchestrator_edits": 2, "orchestrator_code_edits": 1, "worker_edits": 2,
                                        "worker_reports": ["completed", "none", "none"]}  # the last Outcome line of each report
-    assert S._delegation(tmp_path / "none") == {"delegations": 0, "orchestrator_edits": 0, "worker_edits": 0, "worker_reports": []}
+    assert S._delegation(tmp_path / "none") == {"delegations": 0, "orchestrator_edits": 0, "orchestrator_code_edits": 0,
+                                                "worker_edits": 0, "worker_reports": []}
 
 
 def test_study_report_prints_the_group_tables_from_result_files(tmp_path, capsys, monkeypatch):
