@@ -288,9 +288,10 @@ def test_delegation_is_counted_from_the_transcripts(tmp_path):
             {"type": "user", "message": {"content": [{"type": "tool_use", "id": "t7", "name": "Edit"}]}}, "broken"]
     (folder / "s.jsonl").write_text("".join((json.dumps(r) if isinstance(r, dict) else r) + "\n" for r in rows))
     assert S._delegation(tmp_path) == {"delegations": 3, "orchestrator_edits": 2, "orchestrator_code_edits": 1, "worker_edits": 2,
+                                       "planner_test_files": ["tests/test_calc.py"],
                                        "worker_reports": ["completed", "none", "none"]}  # the last Outcome line of each report
     assert S._delegation(tmp_path / "none") == {"delegations": 0, "orchestrator_edits": 0, "orchestrator_code_edits": 0,
-                                                "worker_edits": 0, "worker_reports": []}
+                                                "worker_edits": 0, "planner_test_files": [], "worker_reports": []}
 
 
 def test_study_report_prints_the_group_tables_from_result_files(tmp_path, capsys, monkeypatch):
@@ -505,6 +506,13 @@ def test_test_file_check_sees_changed_and_deleted_tests_but_not_new_ones(tmp_pat
     assert got["worker_steps_checked"] == 2
     assert got["test_files_changed_by_worker"] == ["src/calc.test.ts", "tests/test_a.py", "tests/test_new.py"]
     assert got["delegations"] == 0  # the transcript counts are still there
+    assert got["acceptance_tests_changed_by_worker"] == []  # the planner wrote none of them (no transcript here)
+    # with a transcript in which the planner wrote tests/test_a.py, that one is its acceptance test
+    (cfg / "projects").mkdir()
+    (cfg / "projects" / "s.jsonl").write_text(json.dumps({"type": "assistant", "isSidechain": False, "message": {"content": [
+        {"type": "tool_use", "id": "w1", "name": "Write", "input": {"file_path": str(work / "tests" / "test_a.py").replace(str(work), "/x/work")}}]}}) + "\n")
+    again = setup.measure(cfg)
+    assert again["planner_test_files"] == ["tests/test_a.py"] and again["acceptance_tests_changed_by_worker"] == ["tests/test_a.py"]
     first = json.loads((cfg / S.TEST_LOG).read_text().splitlines()[0])
     assert set(first["files"]) == {"tests/test_a.py", "tests/test_b.py", "src/calc.test.ts"} and first["id"] == "t1"
 
@@ -525,14 +533,19 @@ def test_test_file_check_pairs_overlapping_hand_offs_by_id_and_survives_a_broken
 
 
 def test_report_shows_the_result_with_and_without_runs_where_a_worker_changed_tests():
-    def run(c, passed, changed, checked=1):
-        extra = {"delegations": 1, "worker_steps_checked": checked, "test_files_changed_by_worker": changed} if checked else {"delegations": 1}
+    def run(c, passed, changed, checked=1, own=None):
+        extra = {"delegations": 1, "worker_steps_checked": checked, "test_files_changed_by_worker": changed,
+                 "acceptance_tests_changed_by_worker": changed if own is None else own} if checked else {"delegations": 1}
         return rec(c, "planner@opus+haiku", passed, 0.4, **extra)
 
-    records = [run("a", True, []), run("b", True, ["tests/test_a.py"]), run("c", False, ["tests/test_a.py"]), run("d", True, [], checked=0)]
+    records = [run("a", True, []), run("b", True, ["tests/test_a.py"]), run("c", False, ["tests/test_a.py"]), run("d", True, [], checked=0),
+               run("e", True, ["tests/test_existing.py"], own=[])]  # like pilot 2: only a project test was updated
     text = study.render_extras(records, ["planner@opus+haiku"])
-    assert ("A worker changed test files that were there before its step in 2 of 3 checked runs; 1 of those passed the hidden tests. "
-            "Counting those as failures, the setup solved 2 of 4 runs, not 3.") in text
+    assert ("A worker changed the planner's own acceptance tests in 2 of 4 checked runs. 1 of those passed the hidden tests. "
+            "Counting those as failures, the setup solved 3 of 5 runs, not 4. In 1 more, a worker changed only the project's "
+            "existing tests, which the hidden tests replace before judging.") in text
+    clean = study.render_extras([run("a", True, [])], ["planner@opus+haiku"])
+    assert "acceptance tests in 0 of 1 checked runs." in clean and "Counting those as failures" not in clean
     unchecked = study.render_extras([run("a", True, [], checked=0)], ["planner@opus+haiku"])
     assert "The test-file check did not run" in unchecked
 
