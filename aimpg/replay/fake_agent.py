@@ -62,6 +62,18 @@ def transcript(cfg: Path, cwd: Path, model: str, n: int) -> tuple[dict, dict]:
     return usage, model_usage
 
 
+def run_hooks(cfg: Path, cwd: Path, event: str) -> None:
+    """What Claude Code does with settings.json hooks for an Agent hand-off: run each command with the event on stdin."""
+    try:
+        groups = json.loads((cfg / "settings.json").read_text())["hooks"][event]
+    except (OSError, ValueError, KeyError):
+        return
+    for group in groups:
+        for hook in group.get("hooks", []):
+            subprocess.run(hook["command"], shell=True, input=json.dumps({"cwd": str(cwd), "tool_name": "Agent", "tool_use_id": "tu_agent_1"}),
+                           text=True, timeout=60)
+
+
 def worker_transcript(cfg: Path, cwd: Path, model: str) -> dict:
     """A sub-agent's rows (isSidechain) on another model, plus the orchestrator's hand-off: what a
     planner with a worker leaves behind. Returns that model's modelUsage."""
@@ -204,7 +216,11 @@ def main() -> int:
     if any("STATUS: DONE" in a for a in args):  # the task asked for a status line
         result["result"] = "Nothing to do.\n\nSTATUS: NOT DONE" if mode == "honest" else "All changes are in.\n\n**STATUS: DONE**"
     if mode == "delegate":
+        run_hooks(cfg, cwd, "PreToolUse")  # Claude Code runs the configured hooks around each hand-off
         result["modelUsage"].update(worker_transcript(cfg, cwd, "claude-haiku-5-5"))
+        for test in sorted(cwd.glob("tests/test_*.py"))[:1]:  # the made-up worker touches a test that was already there
+            test.write_text(test.read_text() + "\n# edited by the worker\n")
+        run_hooks(cfg, cwd, "PostToolUse")
         mode = "solve"
     if "--resume" in args:  # a resumed session re-reads a longer context: make that visible in tokens
         result["resumed"] = args[args.index("--resume") + 1]

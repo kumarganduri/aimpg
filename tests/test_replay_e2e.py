@@ -351,7 +351,9 @@ def test_a_worker_on_another_model_is_priced_and_counted_separately(prepared):
 
     layout, commit, _, solution = prepared
     setup = fake("delegate")
-    setup.measure = S._delegation  # what the planner setup measures after each run
+    copy_agent = setup.configure
+    setup.configure = lambda cfgdir: (copy_agent(cfgdir), S._test_hook_configure(cfgdir))  # what the planner setup installs
+    setup.measure = S._planner_measure  # and what it measures after each run
     rec = run_one(commit, setup, 0, layout, cfg(), solution=solution, run_id="delegate")
     assert rec.outcome == "passed", rec.note
     assert rec.tokens_check == "ok"  # the worker's tokens are in the transcript total and in modelUsage
@@ -360,4 +362,6 @@ def test_a_worker_on_another_model_is_priced_and_counted_separately(prepared):
     assert rec.extra["by_model"]["claude-sonnet-5"]["requests"] == 3
     assert (rec.extra["delegations"], rec.extra["orchestrator_edits"], rec.extra["worker_edits"]) == (1, 0, 2)
     assert rec.extra["worker_reports"] == ["completed"]
+    # the test-file check ran inside the sandbox, before and after the hand-off, and saw the worker's edit
+    assert rec.extra["worker_steps_checked"] == 1 and rec.extra["test_files_changed_by_worker"] == ["tests/test_add.py"]
 
