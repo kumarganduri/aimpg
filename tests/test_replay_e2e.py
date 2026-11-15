@@ -359,4 +359,5 @@ def test_a_worker_on_another_model_is_priced_and_counted_separately(prepared):
     assert rec.extra["by_model"]["claude-haiku-5-5"]["requests"] == 2 and rec.extra["by_model"]["claude-haiku-5-5"]["usd"] > 0
     assert rec.extra["by_model"]["claude-sonnet-5"]["requests"] == 3
     assert (rec.extra["delegations"], rec.extra["orchestrator_edits"], rec.extra["worker_edits"]) == (1, 0, 2)
+    assert rec.extra["worker_reports"] == ["completed"]
 

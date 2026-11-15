@@ -83,7 +83,10 @@ def worker_transcript(cfg: Path, cwd: Path, model: str) -> dict:
     # the orchestrator's own hand-off, in a main-chain file; no usage, so it adds no tokens of its own
     hand_off = row(2, False, [{"type": "tool_use", "id": "tu_agent_1", "name": "Agent", "input": {"subagent_type": "worker"}}],
                    row_model="orchestrator", with_usage=False)
-    (folder.parent.parent / f"{session}-handoff.jsonl").write_text(json.dumps(hand_off) + "\n")
+    report = {"type": "user", "sessionId": session, "cwd": str(cwd), "timestamp": _now_iso(13), "isSidechain": False,
+              "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_agent_1", "content": [
+                  {"type": "text", "text": "Outcome: completed\nVerification: tests -> pass"}]}]}}
+    (folder.parent.parent / f"{session}-handoff.jsonl").write_text(json.dumps(hand_off) + "\n" + json.dumps(report) + "\n")
     return {model: {"inputTokens": 2 * usage["input_tokens"], "outputTokens": 2 * usage["output_tokens"],
                     "cacheReadInputTokens": 2 * usage["cache_read_input_tokens"],
                     "cacheCreationInputTokens": 2 * usage["cache_creation_input_tokens"]}}

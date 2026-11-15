@@ -202,6 +202,7 @@ WORKER_PROMPT = (
     "run the checks the brief names if you can, and report what you changed and whether each acceptance criterion is met."
 )
 _EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+_WORKER_OUTCOME = _re.compile(r"^[\s>*_`]*Outcome:[\s*_`]*(completed|partial|blocked)\b", _re.I | _re.M)
 _DELEGATE_TOOLS = {"Agent", "Task"}
 AGENT_KEYS = {"description", "prompt", "model"}  # what a record may set for a sub-agent; nothing else is passed on
 
@@ -235,6 +236,7 @@ def _delegation(cfg: Path) -> dict:
     A planner told not to write code may still do it. These counts say how often, so a study can
     report the setup as it really behaved."""
     delegations = main_edits = worker_edits = 0
+    handed, reports = {}, {}  # hand-offs in order, and what each worker reported back
     for path in sorted((cfg / "projects").rglob("*.jsonl")) if (cfg / "projects").is_dir() else []:
         seen = set()
         for line in path.read_text(errors="replace").splitlines():
@@ -244,6 +246,14 @@ def _delegation(cfg: Path) -> dict:
                 continue
             message = row.get("message") if isinstance(row, dict) else None
             content = message.get("content") if isinstance(message, dict) else None
+            if row.get("type") == "user" and isinstance(content, list) and not row.get("isSidechain"):
+                for block in content:  # a worker's report comes back to the orchestrator as the hand-off's result
+                    if isinstance(block, dict) and block.get("type") == "tool_result" and block.get("tool_use_id") in handed:
+                        text = block.get("content")
+                        if isinstance(text, list):
+                            text = "\n".join(str(b.get("text", "")) for b in text if isinstance(b, dict))
+                        found = _WORKER_OUTCOME.findall(str(text or ""))
+                        reports[block["tool_use_id"]] = found[-1].lower() if found else "none"
             if row.get("type") != "assistant" or not isinstance(content, list):
                 continue
             for block in content:
@@ -253,19 +263,24 @@ def _delegation(cfg: Path) -> dict:
                 side = bool(row.get("isSidechain"))
                 if block.get("name") in _DELEGATE_TOOLS and not side:
                     delegations += 1
+                    handed[block.get("id")] = len(handed)
                 elif block.get("name") in _EDIT_TOOLS:
                     worker_edits += side
                     main_edits += not side
-    return {"delegations": delegations, "orchestrator_edits": main_edits, "worker_edits": worker_edits}
+    # what each worker said about its own result, in hand-off order: completed | partial | blocked | none
+    # (none: no `Outcome:` line, or no report came back). Lets a study count how often the planner
+    # caught a worker's false "completed".
+    return {"delegations": delegations, "orchestrator_edits": main_edits, "worker_edits": worker_edits,
+            "worker_reports": [reports.get(i, "none") for i in sorted(handed, key=handed.get)]}
 
 
 def planner(planner_model: str = "opus", worker_model: str = "haiku", *, name: str | None = None,
-            prompt: str | None = None, agents: dict | None = None) -> Setup:
+            prompt: str | None = None, agents: dict | None = None, worker_prompt: str | None = None) -> Setup:
     """Claude Code with `planner_model` as an orchestrator that plans and checks, and a `worker`
     sub-agent on `worker_model` that implements. Every request is priced by its own model, so the
     orchestrator's tokens are in the cost."""
     planner_id = check_model(MODELS.get(planner_model, planner_model))
-    agents = check_agents(agents or {"worker": {"description": WORKER_DESCRIPTION, "prompt": WORKER_PROMPT,
+    agents = check_agents(agents or {"worker": {"description": WORKER_DESCRIPTION, "prompt": worker_prompt or WORKER_PROMPT,
                                                 "model": MODELS.get(worker_model, worker_model)}})
     prompt = prompt or PLANNER_PROMPT
     return Setup(name or f"planner@{planner_model}+{worker_model}", model=planner_id,
